@@ -52,6 +52,30 @@ pub const Backend = struct {
         return error.Unsupported;
     }
 
+    pub fn setAttentionIcon(self: *Backend, icon: ?Icon) Error!void {
+        _ = self;
+        _ = icon;
+        return error.Unsupported;
+    }
+
+    pub fn setOverlayIcon(self: *Backend, icon: ?Icon) Error!void {
+        _ = self;
+        _ = icon;
+        return error.Unsupported;
+    }
+
+    pub fn setStatus(self: *Backend, status: tray_mod.Status) Error!void {
+        _ = self;
+        _ = status;
+        return error.Unsupported;
+    }
+
+    pub fn closeNotification(self: *Backend, tag: Notification.Tag) Error!void {
+        _ = self;
+        _ = tag;
+        return error.Unsupported;
+    }
+
     pub fn showMenu(self: *Backend) Error!void {
         _ = self;
         return error.Unsupported;

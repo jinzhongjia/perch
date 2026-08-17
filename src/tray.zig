@@ -48,6 +48,68 @@ pub const Modifiers = packed struct {
 
 pub const ScrollAxis = enum { vertical, horizontal };
 
+/// Screen coordinates, where the platform reports them.
+pub const Point = struct { x: i32, y: i32 };
+
+pub const ClickEvent = struct {
+    button: MouseButton,
+    /// Always empty on Linux: `StatusNotifierItem` does not report modifiers.
+    mods: Modifiers = .{},
+    /// Where the click landed, when the platform says.
+    at: ?Point = null,
+};
+
+pub const ScrollEvent = struct {
+    axis: ScrollAxis,
+    delta: i32,
+    mods: Modifiers = .{},
+};
+
+/// What a left click does. Platforms decide this up front rather than per click,
+/// so it is a policy on the tray and not a return value from a callback.
+pub const LeftClick = enum {
+    /// Open the menu. The default whenever a menu is attached.
+    show_menu,
+    /// Call `Handler.on_click` instead, leaving the menu to the right button.
+    activate,
+};
+
+/// How prominent the icon should be.
+pub const Status = enum {
+    /// Visible and idle.
+    active,
+    /// The host may hide the icon; on Linux it moves to the expander.
+    passive,
+    /// Ask for the user's attention, using `attention_icon` if one is set.
+    needs_attention,
+
+    /// The value `StatusNotifierItem.Status` expects.
+    pub fn sniName(self: Status) []const u8 {
+        return switch (self) {
+            .active => "Active",
+            .passive => "Passive",
+            .needs_attention => "NeedsAttention",
+        };
+    }
+};
+
+/// Where the host should file the icon. Some hosts sort or group by this.
+pub const Category = enum {
+    application_status,
+    communications,
+    system_services,
+    hardware,
+
+    pub fn sniName(self: Category) []const u8 {
+        return switch (self) {
+            .application_status => "ApplicationStatus",
+            .communications => "Communications",
+            .system_services => "SystemServices",
+            .hardware => "Hardware",
+        };
+    }
+};
+
 /// Callbacks are invoked on the thread that called `Tray.run`.
 pub const Handler = struct {
     ctx: ?*anyopaque = null,
@@ -55,10 +117,25 @@ pub const Handler = struct {
     on_ready: ?*const fn (ctx: ?*anyopaque, tray: *Tray) void = null,
     /// A menu item was chosen. Checkboxes and radios are already toggled.
     on_activate: ?*const fn (ctx: ?*anyopaque, tray: *Tray, id: MenuItem.Id) void = null,
-    /// The icon itself was clicked. Return `true` to suppress the default
-    /// behaviour (showing the menu).
-    on_click: ?*const fn (ctx: ?*anyopaque, tray: *Tray, button: MouseButton, mods: Modifiers) bool = null,
-    on_scroll: ?*const fn (ctx: ?*anyopaque, tray: *Tray, axis: ScrollAxis, delta: i32) void = null,
+    /// The icon itself was clicked. A left click only arrives when
+    /// `Options.left_click` is `.activate`; a right click only when the host
+    /// asks perch instead of opening the menu itself.
+    on_click: ?*const fn (ctx: ?*anyopaque, tray: *Tray, event: ClickEvent) void = null,
+    on_scroll: ?*const fn (ctx: ?*anyopaque, tray: *Tray, event: ScrollEvent) void = null,
+    /// The user pressed a notification's action button.
+    on_notification_action: ?*const fn (
+        ctx: ?*anyopaque,
+        tray: *Tray,
+        tag: Notification.Tag,
+        action: []const u8,
+    ) void = null,
+    /// A notification went away, whether dismissed, expired or closed by us.
+    on_notification_closed: ?*const fn (
+        ctx: ?*anyopaque,
+        tray: *Tray,
+        tag: Notification.Tag,
+        reason: Notification.CloseReason,
+    ) void = null,
     /// The session is ending; `run` returns right after this.
     on_quit: ?*const fn (ctx: ?*anyopaque, tray: *Tray) void = null,
 };
@@ -76,10 +153,23 @@ pub const Options = struct {
     title: []const u8 = "",
     tooltip: ?[]const u8 = null,
     icon: ?Icon = null,
+    /// Shown instead of `icon` while the status is `.needs_attention`.
+    attention_icon: ?Icon = null,
+    /// Small badge drawn over `icon` where the platform supports it.
+    overlay_icon: ?Icon = null,
+    status: Status = .active,
+    category: Category = .application_status,
+    /// Defaults to `.show_menu` when a menu is attached, `.activate` otherwise.
+    left_click: ?LeftClick = null,
     /// Borrowed; must outlive the tray.
     menu: ?*Menu = null,
     handler: Handler = .{},
     linux: LinuxOptions = .{},
+
+    /// The effective left-click policy.
+    pub fn leftClick(self: Options) LeftClick {
+        return self.left_click orelse if (self.menu != null) .show_menu else .activate;
+    }
 };
 
 /// A live tray icon. Create with `Tray.create`, drive with `Tray.run`.
@@ -142,8 +232,30 @@ pub const Tray = struct {
         return self.impl.setMenu(self.menu);
     }
 
+    pub fn setAttentionIcon(self: *Tray, icon: ?Icon) Error!void {
+        self.options.attention_icon = icon;
+        return self.impl.setAttentionIcon(icon);
+    }
+
+    pub fn setOverlayIcon(self: *Tray, icon: ?Icon) Error!void {
+        self.options.overlay_icon = icon;
+        return self.impl.setOverlayIcon(icon);
+    }
+
+    pub fn setStatus(self: *Tray, status: Status) Error!void {
+        self.options.status = status;
+        return self.impl.setStatus(status);
+    }
+
+    /// Posts a notification. Give it a `tag` to be able to replace or close it.
     pub fn notify(self: *Tray, notification: Notification) Error!void {
         return self.impl.notify(notification);
+    }
+
+    /// Withdraws a notification posted with `tag`. Unknown tags are ignored,
+    /// since a notification the user already dismissed is simply gone.
+    pub fn closeNotification(self: *Tray, tag: Notification.Tag) Error!void {
+        return self.impl.closeNotification(tag);
     }
 
     /// Pops the menu up at the pointer, as if the icon had been clicked.
@@ -181,6 +293,31 @@ pub const Tray = struct {
             };
         }
         if (self.handler.on_activate) |cb| cb(self.handler.ctx, self, id);
+    }
+
+    /// Dispatch helper for backends.
+    pub fn dispatchClick(self: *Tray, event: ClickEvent) void {
+        if (self.handler.on_click) |cb| cb(self.handler.ctx, self, event);
+    }
+
+    pub fn dispatchScroll(self: *Tray, event: ScrollEvent) void {
+        if (self.handler.on_scroll) |cb| cb(self.handler.ctx, self, event);
+    }
+
+    pub fn dispatchNotificationAction(
+        self: *Tray,
+        tag: Notification.Tag,
+        action: []const u8,
+    ) void {
+        if (self.handler.on_notification_action) |cb| cb(self.handler.ctx, self, tag, action);
+    }
+
+    pub fn dispatchNotificationClosed(
+        self: *Tray,
+        tag: Notification.Tag,
+        reason: Notification.CloseReason,
+    ) void {
+        if (self.handler.on_notification_closed) |cb| cb(self.handler.ctx, self, tag, reason);
     }
 };
 

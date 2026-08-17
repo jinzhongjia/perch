@@ -1,5 +1,4 @@
-//! Just enough PNG to fill `StatusNotifierItem.IconPixmap`, which wants raw
-//! ARGB32 in network byte order.
+//! PNG decoding.
 //!
 //! Supported: 8- and 16-bit depths, greyscale, RGB, palette and alpha variants,
 //! non-interlaced. Adam7 interlacing is rejected rather than guessed at.
@@ -7,27 +6,11 @@
 const std = @import("std");
 const flate = std.compress.flate;
 
+const image = @import("../image.zig");
+const Error = image.Error;
+const Image = image.Image;
+
 pub const signature = [_]u8{ 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
-
-pub const Error = error{
-    NotPng,
-    /// Well-formed PNG that uses a feature this decoder does not implement.
-    Unsupported,
-    Corrupt,
-    OutOfMemory,
-};
-
-/// Decoded pixels, four bytes per pixel in A, R, G, B order.
-pub const Image = struct {
-    width: u32,
-    height: u32,
-    argb: []u8,
-
-    pub fn deinit(self: *Image, gpa: std.mem.Allocator) void {
-        gpa.free(self.argb);
-        self.* = undefined;
-    }
-};
 
 const ColorType = enum(u8) {
     grey = 0,
@@ -66,9 +49,9 @@ const Header = struct {
 };
 
 /// Decodes `data` into ARGB32. The caller owns the returned image.
-pub fn decodeArgb32(gpa: std.mem.Allocator, data: []const u8) Error!Image {
+pub fn decode(gpa: std.mem.Allocator, data: []const u8) Error!Image {
     if (data.len < signature.len or !std.mem.eql(u8, data[0..signature.len], &signature)) {
-        return error.NotPng;
+        return error.UnknownFormat;
     }
 
     var header: ?Header = null;
@@ -282,6 +265,26 @@ fn paletteIndex(line: []const u8, column: usize, depth: u8) u8 {
 
 // -- tests ------------------------------------------------------------------
 
+/// Builds an RGBA8 PNG from raw pixels, for tests elsewhere in the tree that
+/// need a valid image without carrying a fixture file.
+pub fn testImage(
+    gpa: std.mem.Allocator,
+    width: u32,
+    height: u32,
+    rgba: []const u8,
+) ![]u8 {
+    const row_len = width * 4;
+    std.debug.assert(rgba.len == row_len * height);
+
+    var scanlines: std.ArrayList(u8) = .empty;
+    defer scanlines.deinit(gpa);
+    for (0..height) |row| {
+        try scanlines.append(gpa, 0); // filter: none
+        try scanlines.appendSlice(gpa, rgba[row * row_len ..][0..row_len]);
+    }
+    return buildPng(gpa, width, height, .rgba, 8, scanlines.items, &.{});
+}
+
 /// Builds a PNG in memory so the tests do not need fixture files.
 fn buildPng(
     gpa: std.mem.Allocator,
@@ -362,15 +365,15 @@ test "rgba decodes to ARGB in network order" {
     const data = try buildPng(gpa, 2, 1, .rgba, 8, &scanlines, &.{});
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
 
-    try std.testing.expectEqual(@as(u32, 2), image.width);
-    try std.testing.expectEqual(@as(u32, 1), image.height);
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
     try std.testing.expectEqualSlices(u8, &.{
         0x44, 0x11, 0x22, 0x33,
         0xdd, 0xaa, 0xbb, 0xcc,
-    }, image.argb);
+    }, decoded.argb);
 }
 
 test "rgb gets an opaque alpha channel" {
@@ -380,9 +383,9 @@ test "rgb gets an opaque alpha channel" {
     const data = try buildPng(gpa, 1, 1, .rgb, 8, &scanlines, &.{});
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 1, 2, 3 }, image.argb);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 1, 2, 3 }, decoded.argb);
 }
 
 test "the Sub filter is reversed" {
@@ -393,13 +396,13 @@ test "the Sub filter is reversed" {
     const data = try buildPng(gpa, 3, 1, .rgb, 8, &scanlines, &.{});
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
     try std.testing.expectEqualSlices(u8, &.{
         0xff, 10, 20, 30,
         0xff, 11, 21, 31,
         0xff, 13, 23, 33,
-    }, image.argb);
+    }, decoded.argb);
 }
 
 test "the Up filter reads the previous row" {
@@ -412,12 +415,12 @@ test "the Up filter reads the previous row" {
     const data = try buildPng(gpa, 1, 2, .rgb, 8, &scanlines, &.{});
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
     try std.testing.expectEqualSlices(u8, &.{
         0xff, 5,  5,  5,
         0xff, 15, 15, 15,
-    }, image.argb);
+    }, decoded.argb);
 }
 
 test "palette images resolve through PLTE and tRNS" {
@@ -432,12 +435,12 @@ test "palette images resolve through PLTE and tRNS" {
     });
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
     try std.testing.expectEqualSlices(u8, &.{
         0x80, 255, 0,   0,
         0xff, 0,   255, 0,
-    }, image.argb);
+    }, decoded.argb);
 }
 
 test "16-bit samples are truncated to 8" {
@@ -448,16 +451,16 @@ test "16-bit samples are truncated to 8" {
     const data = try buildPng(gpa, 1, 1, .rgb, 16, &scanlines, &.{});
     defer gpa.free(data);
 
-    var image = try decodeArgb32(gpa, data);
-    defer image.deinit(gpa);
-    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x12, 0x56, 0x9a }, image.argb);
+    var decoded = try decode(gpa, data);
+    defer decoded.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, &.{ 0xff, 0x12, 0x56, 0x9a }, decoded.argb);
 }
 
 test "non-PNG input and interlacing are rejected" {
     const gpa = std.testing.allocator;
 
-    try std.testing.expectError(error.NotPng, decodeArgb32(gpa, "not a png at all"));
-    try std.testing.expectError(error.NotPng, decodeArgb32(gpa, ""));
+    try std.testing.expectError(error.UnknownFormat, decode(gpa, "not a png at all"));
+    try std.testing.expectError(error.UnknownFormat, decode(gpa, ""));
 
     const scanlines = [_]u8{ 0, 1, 2, 3 };
     const data = try buildPng(gpa, 1, 1, .rgb, 8, &scanlines, &.{});
@@ -466,5 +469,5 @@ test "non-PNG input and interlacing are rejected" {
     // Flip the interlace byte, the last of IHDR's 13 bytes.
     const interlace_at = signature.len + 8 + 12;
     data[interlace_at] = 1;
-    try std.testing.expectError(error.Unsupported, decodeArgb32(gpa, data));
+    try std.testing.expectError(error.Unsupported, decode(gpa, data));
 }

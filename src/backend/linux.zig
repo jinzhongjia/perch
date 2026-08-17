@@ -12,11 +12,13 @@ const linux = std.os.linux;
 
 const Connection = @import("../linux/Connection.zig");
 const DBusMenu = @import("../linux/DBusMenu.zig");
+const IconExport = @import("../linux/IconExport.zig");
 const Message = @import("../linux/Message.zig");
-const png = @import("../linux/png.zig");
 const wire = @import("../linux/wire.zig");
 
-const Icon = @import("../icon.zig").Icon;
+const image = @import("../image.zig");
+const icon_mod = @import("../icon.zig");
+const Icon = icon_mod.Icon;
 const Menu = @import("../menu.zig").Menu;
 const Notification = @import("../notification.zig").Notification;
 const tray_mod = @import("../tray.zig");
@@ -54,10 +56,43 @@ pub const Backend = struct {
     /// Bumped whenever the menu changes; hosts refetch when it moves.
     menu_revision: u32 = 1,
 
-    /// Decoded from `Icon.bytes`/`Icon.path` for `IconPixmap`. Owned.
-    icon_pixmap: ?png.Image = null,
+    /// The three icon slots `StatusNotifierItem` defines.
+    icon: Slot = .{},
+    attention: Slot = .{},
+    overlay: Slot = .{},
+
+    /// Where SVG icons are exported for the host to render. Only set up when an
+    /// icon actually carries markup.
+    icon_export: ?IconExport = null,
+
+    /// Notifications we have posted, so tags can be mapped to server ids.
+    notifications: std.ArrayList(Posted) = .empty,
+
     /// Scratch for marshalling reply bodies; reused.
     body: wire.Writer,
+
+    /// One icon slot: every decoded size, largest first, plus the themed name of
+    /// an exported SVG if the icon carried markup. Publishing all the sizes lets
+    /// the host pick per display scale instead of stretching one.
+    const Slot = struct {
+        images: []image.Image = &.{},
+        exported_name: ?[]u8 = null,
+
+        fn deinit(self: *Slot, gpa: std.mem.Allocator) void {
+            image.freeAll(gpa, self.images);
+            if (self.exported_name) |name| gpa.free(name);
+            self.* = .{};
+        }
+    };
+
+    /// A notification in flight. `id` stays null until the daemon answers, which
+    /// is why callers address notifications by their own `tag`.
+    const Posted = struct {
+        tag: Notification.Tag,
+        /// Serial of the `Notify` call, for matching the reply.
+        serial: u32,
+        id: ?u32 = null,
+    };
 
     pub fn init(owner: *Tray) Error!Backend {
         const gpa = owner.gpa;
@@ -125,7 +160,13 @@ pub const Backend = struct {
                 "member='NameOwnerChanged',arg0='" ++ watcher_name ++ "'",
         ) catch {};
 
-        try self.loadIconPixmap(options.icon);
+        // Action buttons and dismissals come back as signals from the daemon.
+        conn.addMatch(
+            "type='signal',sender='" ++ notifications_name ++ "'," ++
+                "interface='" ++ notifications_interface ++ "'",
+        ) catch {};
+
+        try self.loadIcons();
 
         // Starting before the desktop shell is normal, so an absent watcher is
         // not an error: NameOwnerChanged brings us back.
@@ -145,7 +186,11 @@ pub const Backend = struct {
     }
 
     pub fn deinit(self: *Backend) void {
-        if (self.icon_pixmap) |*image| image.deinit(self.gpa);
+        self.icon.deinit(self.gpa);
+        self.attention.deinit(self.gpa);
+        self.overlay.deinit(self.gpa);
+        if (self.icon_export) |*exporter| exporter.deinit();
+        self.notifications.deinit(self.gpa);
         self.body.deinit();
         self.conn.destroy();
         self.gpa.free(self.service_name);
@@ -156,9 +201,36 @@ pub const Backend = struct {
     // -- perch API ----------------------------------------------------------
 
     pub fn setIcon(self: *Backend, icon: Icon) Error!void {
-        try self.loadIconPixmap(icon);
+        _ = icon;
+        try self.loadIcons();
         self.emitItemSignal("NewIcon");
         return;
+    }
+
+    pub fn setAttentionIcon(self: *Backend, icon: ?Icon) Error!void {
+        _ = icon;
+        try self.loadIcons();
+        self.emitItemSignal("NewAttentionIcon");
+        return;
+    }
+
+    pub fn setOverlayIcon(self: *Backend, icon: ?Icon) Error!void {
+        _ = icon;
+        try self.loadIcons();
+        self.emitItemSignal("NewOverlayIcon");
+        return;
+    }
+
+    pub fn setStatus(self: *Backend, status: tray_mod.Status) Error!void {
+        self.body.clearRetainingCapacity();
+        self.body.string(status.sniName()) catch return error.OutOfMemory;
+        self.conn.emit(.{
+            .path = item_path,
+            .interface = item_interface,
+            .member = "NewStatus",
+            .signature = "s",
+            .body = self.body.bytes(),
+        }) catch |err| return mapSendError(err);
     }
 
     /// The new value is already in `owner.options`, which is where the property
@@ -196,42 +268,151 @@ pub const Backend = struct {
     pub fn notify(self: *Backend, notification: Notification) Error!void {
         const options = self.owner.options;
 
+        // Reusing a tag replaces the notification still holding it.
+        const replaces: u32 = replaces: {
+            const tag = notification.tag orelse break :replaces 0;
+            const existing = self.findPosted(tag) orelse break :replaces 0;
+            break :replaces existing.id orelse 0;
+        };
+
         self.body.clearRetainingCapacity();
         const b = &self.body;
-        b.string(options.app_id) catch return error.OutOfMemory;
-        b.int(u32, 0) catch return error.OutOfMemory; // replaces_id
-        b.string(iconName(notification.icon orelse options.icon)) catch return error.OutOfMemory;
-        b.string(notification.title) catch return error.OutOfMemory;
-        b.string(notification.body) catch return error.OutOfMemory;
+        try b.string(options.app_id);
+        try b.int(u32, replaces);
+        try b.string(themedName(notification.icon) orelse themedName(options.icon) orelse "");
+        try b.string(notification.title);
+        try b.string(notification.body);
 
-        const actions = b.arrayBegin("s") catch return error.OutOfMemory;
+        // Actions alternate key, label — the key comes back in ActionInvoked.
+        const actions = try b.arrayBegin("s");
+        for (notification.actions) |action| {
+            try b.string(action.key);
+            try b.string(action.label);
+        }
         b.arrayEnd(actions);
 
-        const hints = b.arrayBegin("{sv}") catch return error.OutOfMemory;
-        b.dictEntryBegin() catch return error.OutOfMemory;
-        b.string("urgency") catch return error.OutOfMemory;
-        b.variantBegin("y") catch return error.OutOfMemory;
-        b.byte(switch (notification.urgency) {
+        const hints = try b.arrayBegin("{sv}");
+        try b.dictEntryBegin();
+        try b.string("urgency");
+        try b.variantBegin("y");
+        try b.byte(switch (notification.urgency) {
             .low => 0,
             .normal => 1,
             .critical => 2,
-        }) catch return error.OutOfMemory;
-        b.dictStringVariantString("desktop-entry", options.app_id) catch return error.OutOfMemory;
+        });
+        try b.dictStringVariantString("desktop-entry", options.app_id);
+        if (notification.category.hintValue()) |category| {
+            try b.dictStringVariantString("category", category);
+        }
+        if (notification.transient) try b.dictStringVariantBool("transient", true);
+        if (notification.resident) try b.dictStringVariantBool("resident", true);
+        if (notification.suppress_sound) try b.dictStringVariantBool("suppress-sound", true);
+        if (notification.sound_name) |sound| {
+            try b.dictStringVariantString("sound-name", sound);
+        }
+        if (notification.progress) |percent| {
+            try b.dictStringVariantInt32("value", @min(percent, 100));
+        }
+        if (notification.image) |picture| try self.writeImageHint(b, picture);
         b.arrayEnd(hints);
 
         const timeout: i32 = if (notification.timeout_ms) |ms| @intCast(ms) else -1;
-        b.int(i32, timeout) catch return error.OutOfMemory;
+        try b.int(i32, timeout);
 
-        _ = self.conn.call(.{
+        const serial = self.conn.call(.{
             .destination = notifications_name,
             .path = notifications_path,
             .interface = notifications_interface,
             .member = "Notify",
             .signature = "susssasa{sv}i",
             .body = b.bytes(),
-            // The reply is just the notification id, which we do not track, but
-            // asking for one means a rejection reaches our log.
         }) catch |err| return mapSendError(err);
+
+        // Remember the call so the reply can attach the daemon's id to our tag.
+        if (notification.tag) |tag| {
+            if (self.findPosted(tag)) |existing| {
+                existing.serial = serial;
+                existing.id = null;
+            } else {
+                try self.notifications.append(self.gpa, .{ .tag = tag, .serial = serial });
+            }
+        }
+    }
+
+    pub fn closeNotification(self: *Backend, tag: Notification.Tag) Error!void {
+        const posted = self.findPosted(tag) orelse return;
+        // Nothing to close yet if the daemon has not answered; dropping the
+        // record keeps the tag reusable.
+        const id = posted.id orelse {
+            self.forgetPosted(tag);
+            return;
+        };
+
+        self.body.clearRetainingCapacity();
+        try self.body.int(u32, id);
+        _ = self.conn.call(.{
+            .destination = notifications_name,
+            .path = notifications_path,
+            .interface = notifications_interface,
+            .member = "CloseNotification",
+            .signature = "u",
+            .body = self.body.bytes(),
+            .no_reply = true,
+        }) catch |err| return mapSendError(err);
+    }
+
+    /// The `image-data` hint: `(iiibiiay)` — width, height, rowstride, alpha,
+    /// bits per sample, channels, pixels. Note that unlike `IconPixmap` this one
+    /// wants RGBA, not ARGB.
+    fn writeImageHint(self: *Backend, b: *wire.Writer, picture: Icon) wire.Writer.Error!void {
+        const frames = icon_mod.decodeAll(self.gpa, picture) catch return;
+        defer image.freeAll(self.gpa, frames);
+        if (frames.len == 0) return;
+        const frame = frames[0];
+
+        try b.dictEntryBegin();
+        try b.string("image-data");
+        try b.variantBegin("(iiibiiay)");
+        try b.structBegin();
+        try b.int(i32, @intCast(frame.width));
+        try b.int(i32, @intCast(frame.height));
+        try b.int(i32, @intCast(frame.width * 4)); // rowstride
+        try b.boolean(true); // has alpha
+        try b.int(i32, 8); // bits per sample
+        try b.int(i32, 4); // channels
+        const pixels = try b.arrayBegin("y");
+        var i: usize = 0;
+        while (i < frame.argb.len) : (i += 4) {
+            const argb = frame.argb[i..][0..4];
+            try b.byte(argb[1]);
+            try b.byte(argb[2]);
+            try b.byte(argb[3]);
+            try b.byte(argb[0]);
+        }
+        b.arrayEnd(pixels);
+    }
+
+    fn findPosted(self: *Backend, tag: Notification.Tag) ?*Posted {
+        for (self.notifications.items) |*posted| {
+            if (posted.tag == tag) return posted;
+        }
+        return null;
+    }
+
+    fn forgetPosted(self: *Backend, tag: Notification.Tag) void {
+        for (self.notifications.items, 0..) |posted, i| {
+            if (posted.tag == tag) {
+                _ = self.notifications.swapRemove(i);
+                return;
+            }
+        }
+    }
+
+    fn postedById(self: *Backend, id: u32) ?*Posted {
+        for (self.notifications.items) |*posted| {
+            if (posted.id == id) return posted;
+        }
+        return null;
     }
 
     /// Hosts own the menu popup, so all we can do is ask for it.
@@ -330,7 +511,16 @@ pub const Backend = struct {
             .signal => {
                 if (message.isSignal(Connection.bus_interface, "NameOwnerChanged")) {
                     try self.handleNameOwnerChanged(message);
+                } else if (message.isSignal(notifications_interface, "ActionInvoked")) {
+                    try self.handleNotificationAction(message);
+                } else if (message.isSignal(notifications_interface, "NotificationClosed")) {
+                    try self.handleNotificationClosed(message);
                 }
+                return;
+            },
+            .method_return => {
+                // The only replies we wait for are notification ids.
+                self.adoptNotificationId(message);
                 return;
             },
             .method_call => {},
@@ -353,6 +543,37 @@ pub const Backend = struct {
             return self.handleItemCall(message);
         }
         try self.conn.replyError(message, "org.freedesktop.DBus.Error.UnknownObject", "no such object");
+    }
+
+    /// Attaches the daemon's notification id to the tag that asked for it.
+    fn adoptNotificationId(self: *Backend, message: Message) void {
+        const reply_serial = message.reply_serial orelse return;
+        for (self.notifications.items) |*posted| {
+            if (posted.serial != reply_serial) continue;
+            var r: wire.Reader = .init(message.body, message.endian);
+            posted.id = r.int(u32) catch return;
+            return;
+        }
+    }
+
+    fn handleNotificationAction(self: *Backend, message: Message) Connection.Error!void {
+        var r: wire.Reader = .init(message.body, message.endian);
+        const id = r.int(u32) catch return error.Malformed;
+        const action = r.string() catch return error.Malformed;
+
+        const posted = self.postedById(id) orelse return;
+        self.owner.dispatchNotificationAction(posted.tag, action);
+    }
+
+    fn handleNotificationClosed(self: *Backend, message: Message) Connection.Error!void {
+        var r: wire.Reader = .init(message.body, message.endian);
+        const id = r.int(u32) catch return error.Malformed;
+        const code = r.int(u32) catch return error.Malformed;
+
+        const posted = self.postedById(id) orelse return;
+        const tag = posted.tag;
+        self.forgetPosted(tag);
+        self.owner.dispatchNotificationClosed(tag, .fromCode(code));
     }
 
     fn handleNameOwnerChanged(self: *Backend, message: Message) Connection.Error!void {
@@ -467,22 +688,28 @@ pub const Backend = struct {
             var r: wire.Reader = .init(message.body, message.endian);
             const delta = r.int(i32) catch return error.Malformed;
             const orientation = r.string() catch return error.Malformed;
-            if (self.owner.handler.on_scroll) |cb| {
-                const axis: tray_mod.ScrollAxis =
-                    if (std.ascii.eqlIgnoreCase(orientation, "horizontal")) .horizontal else .vertical;
-                cb(self.owner.handler.ctx, self.owner, axis, delta);
-            }
+            self.owner.dispatchScroll(.{
+                .axis = if (std.ascii.eqlIgnoreCase(orientation, "horizontal"))
+                    .horizontal
+                else
+                    .vertical,
+                .delta = delta,
+            });
             return self.conn.reply(message, null, &.{});
         }
 
         try self.conn.replyError(message, "org.freedesktop.DBus.Error.UnknownMethod", "unknown method");
     }
 
+    /// All three click methods carry the pointer position, which the API passes
+    /// through. Modifiers are not part of the protocol, so they stay empty.
     fn deliverClick(self: *Backend, button: tray_mod.MouseButton, message: Message) void {
-        _ = message;
-        if (self.owner.handler.on_click) |cb| {
-            _ = cb(self.owner.handler.ctx, self.owner, button, .{});
+        var at: ?tray_mod.Point = null;
+        var r: wire.Reader = .init(message.body, message.endian);
+        if (r.int(i32) catch null) |x| {
+            if (r.int(i32) catch null) |y| at = .{ .x = x, .y = y };
         }
+        self.owner.dispatchClick(.{ .button = button, .at = at });
     }
 
     const item_property_names = [_][]const u8{
@@ -495,7 +722,9 @@ pub const Backend = struct {
         "IconPixmap",
         "IconThemePath",
         "OverlayIconName",
+        "OverlayIconPixmap",
         "AttentionIconName",
+        "AttentionIconPixmap",
         "ToolTip",
         "ItemIsMenu",
         "Menu",
@@ -504,34 +733,34 @@ pub const Backend = struct {
     /// Writes the property as a variant. Returns false for unknown names.
     fn writeItemProperty(self: *Backend, w: *wire.Writer, name: []const u8) wire.Writer.Error!bool {
         const options = self.owner.options;
-        const table = .{
-            .{ "Category", "ApplicationStatus" },
-            .{ "Status", "Active" },
-        };
-        inline for (table) |entry| {
-            if (std.mem.eql(u8, name, entry[0])) {
-                try w.variantString(entry[1]);
-                return true;
-            }
-        }
 
-        if (std.mem.eql(u8, name, "Id")) {
+        if (std.mem.eql(u8, name, "Category")) {
+            try w.variantString(options.category.sniName());
+        } else if (std.mem.eql(u8, name, "Status")) {
+            try w.variantString(options.status.sniName());
+        } else if (std.mem.eql(u8, name, "Id")) {
             try w.variantString(options.app_id);
         } else if (std.mem.eql(u8, name, "Title")) {
             try w.variantString(if (options.title.len > 0) options.title else options.app_id);
         } else if (std.mem.eql(u8, name, "WindowId")) {
             try w.variantInt32(0);
         } else if (std.mem.eql(u8, name, "IconName")) {
-            try w.variantString(iconName(options.icon));
+            try w.variantString(slotName(self.icon, options.icon));
+        } else if (std.mem.eql(u8, name, "AttentionIconName")) {
+            try w.variantString(slotName(self.attention, options.attention_icon));
+        } else if (std.mem.eql(u8, name, "OverlayIconName")) {
+            try w.variantString(slotName(self.overlay, options.overlay_icon));
         } else if (std.mem.eql(u8, name, "IconThemePath")) {
-            try w.variantString(options.linux.icon_theme_path orelse "");
-        } else if (std.mem.eql(u8, name, "OverlayIconName") or
-            std.mem.eql(u8, name, "AttentionIconName"))
-        {
-            try w.variantString("");
+            try w.variantString(self.themePath());
         } else if (std.mem.eql(u8, name, "IconPixmap")) {
             try w.variantBegin("a(iiay)");
-            try self.writePixmaps(w);
+            try writePixmaps(w, self.icon.images);
+        } else if (std.mem.eql(u8, name, "AttentionIconPixmap")) {
+            try w.variantBegin("a(iiay)");
+            try writePixmaps(w, self.attention.images);
+        } else if (std.mem.eql(u8, name, "OverlayIconPixmap")) {
+            try w.variantBegin("a(iiay)");
+            try writePixmaps(w, self.overlay.images);
         } else if (std.mem.eql(u8, name, "ToolTip")) {
             // (icon name, icon pixmaps, title, description)
             try w.variantBegin("(sa(iiay)ss)");
@@ -542,9 +771,10 @@ pub const Backend = struct {
             try w.string(options.tooltip orelse options.title);
             try w.string("");
         } else if (std.mem.eql(u8, name, "ItemIsMenu")) {
-            // True asks the host to open the menu on left click and never call
-            // Activate, which is what we want unless the caller wants clicks.
-            try w.variantBool(self.owner.handler.on_click == null and self.owner.menu != null);
+            // True tells the host to open the menu on left click and never call
+            // Activate. The caller decides through Options.left_click, because
+            // the host commits to one behaviour up front.
+            try w.variantBool(options.leftClick() == .show_menu and self.owner.menu != null);
         } else if (std.mem.eql(u8, name, "Menu")) {
             try w.variantObjectPath(DBusMenu.object_path);
         } else {
@@ -553,36 +783,92 @@ pub const Backend = struct {
         return true;
     }
 
-    fn writePixmaps(self: *Backend, w: *wire.Writer) wire.Writer.Error!void {
+    /// An exported SVG wins over a themed name: the host renders it per display
+    /// scale, which no pixmap can match.
+    fn slotName(slot: Slot, icon: ?Icon) []const u8 {
+        if (slot.exported_name) |exported| return exported;
+        return themedName(icon) orelse "";
+    }
+
+    /// The directory hosts should add to their icon theme search path.
+    fn themePath(self: *const Backend) []const u8 {
+        if (self.icon_export) |exporter| return exporter.root;
+        return self.owner.options.linux.icon_theme_path orelse "";
+    }
+
+    /// `a(iiay)` — one entry per size. Hosts pick the closest to what the current
+    /// display scale needs, which is how HiDPI stays sharp.
+    fn writePixmaps(w: *wire.Writer, images: []const image.Image) wire.Writer.Error!void {
         const array = try w.arrayBegin("(iiay)");
-        if (self.icon_pixmap) |image| {
+        for (images) |frame| {
             try w.structBegin();
-            try w.int(i32, @intCast(image.width));
-            try w.int(i32, @intCast(image.height));
+            try w.int(i32, @intCast(frame.width));
+            try w.int(i32, @intCast(frame.height));
             const pixels = try w.arrayBegin("y");
-            try w.raw(image.argb);
+            try w.raw(frame.argb);
             w.arrayEnd(pixels);
         }
         w.arrayEnd(array);
     }
 
-    /// Decodes `icon` into ARGB32 for `IconPixmap`, if it carries bytes.
-    fn loadIconPixmap(self: *Backend, icon: ?Icon) Error!void {
-        if (self.icon_pixmap) |*old| {
-            old.deinit(self.gpa);
-            self.icon_pixmap = null;
-        }
+    /// Decodes all three icon slots and exports any SVG markup they carry.
+    fn loadIcons(self: *Backend) Error!void {
+        const options = self.owner.options;
+        try self.loadSlot(&self.icon, options.icon, "icon");
+        try self.loadSlot(&self.attention, options.attention_icon, "attention");
+        try self.loadSlot(&self.overlay, options.overlay_icon, "overlay");
+    }
+
+    /// `suffix` keeps the three slots' exported file names apart.
+    fn loadSlot(self: *Backend, slot: *Slot, icon: ?Icon, suffix: []const u8) Error!void {
+        slot.deinit(self.gpa);
         const source = icon orelse return;
-        const bytes = switch (source) {
-            .bytes, .template => |data| data,
-            // A themed name needs no decoding, and a path is left to the host.
-            .named, .path => return,
+
+        slot.images = icon_mod.decodeAll(self.gpa, source) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => blk: {
+                log.warn("perch: cannot decode a tray icon: {t}", .{err});
+                break :blk &.{};
+            },
         };
-        self.icon_pixmap = png.decodeArgb32(self.gpa, bytes) catch |err| switch (err) {
+
+        if (source.svgMarkup()) |markup| {
+            slot.exported_name = try self.exportSvg(markup, suffix);
+        }
+    }
+
+    /// Writes SVG markup where the host can find it and returns the themed name
+    /// to publish. A failure is not fatal: pixmaps or a themed name still cover
+    /// the icon, so it warns and gives up rather than refusing to start.
+    fn exportSvg(self: *Backend, markup: []const u8, suffix: []const u8) Error!?[]u8 {
+        if (self.icon_export == null) {
+            const options = self.owner.options;
+            self.icon_export = IconExport.init(
+                self.gpa,
+                options.io,
+                options.linux.environ.getPosix("XDG_RUNTIME_DIR"),
+                options.linux.icon_theme_path,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("perch: cannot export an SVG icon: {t}", .{err});
+                    return null;
+                },
+            };
+        }
+
+        const base = try std.fmt.allocPrint(
+            self.gpa,
+            "{s}-{s}",
+            .{ self.owner.options.app_id, suffix },
+        );
+        defer self.gpa.free(base);
+
+        return self.icon_export.?.writeSvg(base, markup) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
-                log.warn("perch: cannot decode the tray icon: {t}", .{err});
-                return;
+                log.warn("perch: cannot write an SVG icon: {t}", .{err});
+                return null;
             },
         };
     }
@@ -834,14 +1120,14 @@ fn collectChildIds(gpa: std.mem.Allocator, menu: *Menu, out: *std.ArrayList(i32)
     }
 }
 
-fn iconName(icon: ?Icon) []const u8 {
-    const source = icon orelse return "";
+/// The name a host can resolve on its own, if the icon offers one. A path counts:
+/// hosts that accept absolute paths will take it, and the pixmaps cover the rest.
+fn themedName(icon: ?Icon) ?[]const u8 {
+    const source = icon orelse return null;
+    if (source.themedName()) |name| return name;
     return switch (source) {
-        .named => |name| name,
-        // Hosts that support absolute paths will take this; the pixmap covers
-        // the rest.
         .path => |path| path,
-        .bytes, .template => "",
+        else => null,
     };
 }
 

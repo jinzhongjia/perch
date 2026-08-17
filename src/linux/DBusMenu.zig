@@ -6,6 +6,7 @@
 
 const std = @import("std");
 
+const image = @import("../image.zig");
 const menu_mod = @import("../menu.zig");
 const Menu = menu_mod.Menu;
 const MenuItem = menu_mod.MenuItem;
@@ -197,22 +198,18 @@ pub fn writeNodeProperty(w: *wire.Writer, node: Node, name: []const u8) Error!bo
     }
     if (std.mem.eql(u8, name, "icon-name")) {
         const icon = item.icon orelse return false;
-        switch (icon) {
-            .named => |themed| try w.variantString(themed),
-            else => return false,
-        }
+        const themed = icon.themedName() orelse return false;
+        try w.variantString(themed);
         return true;
     }
     if (std.mem.eql(u8, name, "icon-data")) {
         const icon = item.icon orelse return false;
-        switch (icon) {
-            // dbusmenu takes menu icons as encoded PNG, so raw bytes go
-            // straight through with no decoding.
-            .bytes, .template => |data| try w.variantByteArray(data),
-            // A path is not something dbusmenu can resolve; the caller should
-            // embed the bytes or use a themed name.
-            .named, .path => return false,
-        }
+        // dbusmenu specifies PNG here, so bytes go straight through — but only
+        // when they really are PNG. Other formats would render as nothing, and a
+        // themed name is a better fallback than a broken image.
+        const data = icon.encodedBytes() orelse return false;
+        if (image.sniff(data) != .png) return false;
+        try w.variantByteArray(data);
         return true;
     }
     if (std.mem.eql(u8, name, "shortcut")) {

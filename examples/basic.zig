@@ -28,12 +28,16 @@ const App = struct {
         }
     }
 
-    fn onClick(ctx: ?*anyopaque, tray: *perch.Tray, button: perch.MouseButton, mods: perch.Modifiers) bool {
+    fn onClick(ctx: ?*anyopaque, tray: *perch.Tray, event: perch.ClickEvent) void {
         _ = ctx;
         _ = tray;
-        _ = mods;
-        // Let the platform show the menu for every button but the middle one.
-        return button == .middle;
+        std.log.info("clicked with {t} at {?any}", .{ event.button, event.at });
+    }
+
+    fn onScroll(ctx: ?*anyopaque, tray: *perch.Tray, event: perch.ScrollEvent) void {
+        _ = ctx;
+        _ = tray;
+        std.log.info("scrolled {t} by {d}", .{ event.axis, event.delta });
     }
 };
 
@@ -60,15 +64,19 @@ pub fn main(init: std.process.Init) !void {
         .tooltip = "perch example",
         .icon = .{ .named = "applications-system" },
         .menu = &menu,
-        // Linux needs DBUS_SESSION_BUS_ADDRESS, and library code cannot read
-        // the environment on its own.
-        .linux = .{ .environ = init.minimal.environ },
+        // Left click opens the menu; on_click then only sees the other buttons.
+        // Set this to `.activate` to receive left clicks instead.
+        .left_click = .show_menu,
         .handler = .{
             .ctx = &app,
             .on_ready = App.onReady,
             .on_activate = App.onActivate,
             .on_click = App.onClick,
+            .on_scroll = App.onScroll,
         },
+        // Linux needs DBUS_SESSION_BUS_ADDRESS, and library code cannot read
+        // the environment on its own.
+        .linux = .{ .environ = init.minimal.environ },
     });
     defer tray.destroy();
 
