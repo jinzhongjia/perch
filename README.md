@@ -5,13 +5,14 @@ no GTK, no Qt, no Electron.
 
 | Platform | Backend | Status |
 | --- | --- | --- |
+| Linux / BSD | `StatusNotifierItem` over DBus | **working** |
 | Windows | `Shell_NotifyIcon` + message-only window | scaffolded |
 | macOS | `NSStatusItem` via the Objective-C runtime | scaffolded |
-| Linux / BSD | `StatusNotifierItem` over DBus, XEmbed fallback | scaffolded |
 
-> **Status: pre-alpha.** The public API, menu model and build graph are in place
-> and tested; the platform backends are documented stubs that return
-> `error.NotImplemented`. See [the roadmap](docs/ROADMAP.md).
+> **Status: alpha on Linux, pre-alpha elsewhere.** The Linux backend is a
+> complete, dependency-free DBus implementation — icon, menu, events and
+> notifications all work against a real host. Windows and macOS are documented
+> stubs that return `error.NotImplemented`. See [the roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -49,6 +50,8 @@ const tray = try perch.Tray.create(gpa, .{
     .icon = .{ .bytes = @embedFile("icon.png") },
     .menu = &menu,
     .handler = .{ .ctx = &app, .on_activate = onActivate },
+    // Linux only, and required there: see "Linux" below.
+    .linux = .{ .environ = init.minimal.environ },
 });
 defer tray.destroy();
 
@@ -74,6 +77,29 @@ loop instead of owning it.
 - **One event-loop model.** `run` owns the loop, `pump` doesn't; `stop` is
   callable from any thread.
 
+## Linux
+
+The backend speaks DBus directly — no libdbus, no GTK, no libappindicator. It
+publishes an `org.kde.StatusNotifierItem-<pid>-<n>` name, exports
+`/StatusNotifierItem` and a `com.canonical.dbusmenu` at `/MenuBar`, and registers
+with `org.kde.StatusNotifierWatcher`. Starting before the desktop shell is fine:
+if no watcher is running, perch waits for `NameOwnerChanged` and registers then,
+which also covers a shell restart.
+
+**`Options.linux.environ` is required.** perch needs
+`DBUS_SESSION_BUS_ADDRESS`, and Zig 0.16 gives library code no way to read the
+environment on its own — so pass `init.minimal.environ` from `main`, or set
+`Options.linux.bus_address` yourself.
+
+Working today: themed and embedded icons (`Icon.bytes` is decoded to ARGB32 by a
+built-in PNG decoder for `IconPixmap`), tooltips, the full menu tree with
+submenus, checkboxes, radio groups, separators, accelerators and per-item icons,
+left/middle/right clicks, scroll events, desktop notifications, and live updates
+through `NewIcon`/`LayoutUpdated`/`ItemsPropertiesUpdated`.
+
+Not yet: the XEmbed fallback for sessions with no StatusNotifierHost, and
+`Icon.path` is handed to the host as a name rather than decoded.
+
 ## Layout
 
 ```
@@ -84,6 +110,11 @@ src/icon.zig            icon sources (bytes / path / named / template)
 src/notification.zig    desktop notifications
 src/backend.zig         comptime backend selection
 src/backend/            windows.zig, macos.zig, linux.zig, unsupported.zig
+src/linux/wire.zig      DBus marshalling
+src/linux/Message.zig   DBus message header and body
+src/linux/Connection.zig session bus transport, SASL, message I/O
+src/linux/DBusMenu.zig  com.canonical.dbusmenu layout
+src/linux/png.zig       PNG to ARGB32, for IconPixmap
 src/main.zig            `perch` doctor CLI
 examples/basic.zig      end-to-end example
 ```

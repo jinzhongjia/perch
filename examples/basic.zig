@@ -60,6 +60,9 @@ pub fn main(init: std.process.Init) !void {
         .tooltip = "perch example",
         .icon = .{ .named = "applications-system" },
         .menu = &menu,
+        // Linux needs DBUS_SESSION_BUS_ADDRESS, and library code cannot read
+        // the environment on its own.
+        .linux = .{ .environ = init.minimal.environ },
         .handler = .{
             .ctx = &app,
             .on_ready = App.onReady,

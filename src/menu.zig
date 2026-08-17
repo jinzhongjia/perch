@@ -70,10 +70,12 @@ pub const Menu = struct {
         return owner.next_id;
     }
 
-    /// Appends `item`, assigning an id when `item.id` is left at 0.
+    /// Appends `item`, assigning an id when `item.id` is left at 0. Separators
+    /// get ids too: platforms address every row, and id 0 is reserved for the
+    /// menu itself on Linux.
     pub fn add(self: *Menu, item: MenuItem) !MenuItem.Id {
         var copy = item;
-        copy.id = if (item.kind == .separator) 0 else self.takeId(item.id);
+        copy.id = self.takeId(item.id);
         try self.items.append(self.gpa, copy);
         return copy.id;
     }
@@ -110,8 +112,8 @@ pub const Menu = struct {
 
     /// Depth-first lookup across the whole tree.
     pub fn find(self: *Menu, id: MenuItem.Id) ?*MenuItem {
+        if (id == 0) return null;
         for (self.items.items) |*item| {
-            if (item.kind == .separator) continue;
             if (item.id == id) return item;
             if (item.submenu) |sub| {
                 if (sub.find(id)) |hit| return hit;
@@ -164,6 +166,9 @@ test "ids are unique across the tree" {
     try std.testing.expect(first != quit);
     try std.testing.expectEqualStrings("a.txt", menu.find(first).?.label);
     try std.testing.expect(menu.find(9999) == null);
+    // Id 0 stands for the menu itself, never an item.
+    try std.testing.expect(menu.find(0) == null);
+    for (menu.items.items) |item| try std.testing.expect(item.id != 0);
 }
 
 test "explicit ids do not collide with generated ones" {

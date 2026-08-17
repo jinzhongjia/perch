@@ -6,9 +6,27 @@ const Menu = @import("menu.zig").Menu;
 const MenuItem = @import("menu.zig").MenuItem;
 const Notification = @import("notification.zig").Notification;
 
+/// Linux and BSD knobs, ignored elsewhere.
+pub const LinuxOptions = struct {
+    /// The process environment, needed to find `DBUS_SESSION_BUS_ADDRESS`. Zig
+    /// 0.16 gives library code no other way to read the environment, so pass
+    /// `init.minimal.environ` from `main`.
+    environ: std.process.Environ = .empty,
+    /// Session bus address, overriding whatever `environ` says.
+    bus_address: ?[]const u8 = null,
+    /// Directory of extra themed icons, exported as `IconThemePath` so hosts can
+    /// resolve `Icon.named` values that are not in the system theme.
+    icon_theme_path: ?[]const u8 = null,
+};
+
 pub const Error = error{
     /// No tray backend exists for this platform.
     Unsupported,
+    /// Neither `LinuxOptions.bus_address` nor the environment told us where the
+    /// session bus is.
+    MissingBusAddress,
+    /// The session bus refused the connection or the handshake.
+    BusUnavailable,
     /// The backend exists but this entry point is still a stub.
     NotImplemented,
     /// No status-notifier host is running (e.g. a bare X session).
@@ -61,6 +79,7 @@ pub const Options = struct {
     /// Borrowed; must outlive the tray.
     menu: ?*Menu = null,
     handler: Handler = .{},
+    linux: LinuxOptions = .{},
 };
 
 /// A live tray icon. Create with `Tray.create`, drive with `Tray.run`.

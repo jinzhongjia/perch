@@ -35,12 +35,17 @@ pub fn main(init: std.process.Init) !void {
     try menu.addSeparator();
     const quit = try menu.addItem("Quit");
 
+    var doctor: Doctor = .{ .quit_id = quit };
+
     const tray = perch.Tray.create(gpa, .{
         .io = io,
         .app_id = "dev.perch.doctor",
         .title = "perch",
         .tooltip = "perch doctor",
+        .icon = .{ .named = "applications-system" },
         .menu = &menu,
+        .linux = .{ .environ = init.minimal.environ },
+        .handler = .{ .ctx = &doctor, .on_activate = Doctor.onActivate },
     }) catch |err| {
         try out.print("\n  status   cannot create a tray: {t}\n", .{err});
         if (perch.backend.Impl.supported) {
@@ -50,7 +55,21 @@ pub fn main(init: std.process.Init) !void {
     };
     defer tray.destroy();
 
-    try out.print("\n  status   tray created; menu quit id = {d}\n", .{quit});
+    try out.print(
+        \\
+        \\  status   the icon is live — look for it in your tray
+        \\           choose Quit from its menu, or press Ctrl-C, to exit
+        \\
+    , .{});
     try out.flush();
     try tray.run();
 }
+
+const Doctor = struct {
+    quit_id: perch.MenuItem.Id,
+
+    fn onActivate(ctx: ?*anyopaque, tray: *perch.Tray, id: perch.MenuItem.Id) void {
+        const self: *Doctor = @ptrCast(@alignCast(ctx.?));
+        if (id == self.quit_id) tray.stop();
+    }
+};
