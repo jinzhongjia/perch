@@ -32,10 +32,18 @@ Linux covers most of this already; boxes stay open until all three agree.
 - [x] Live updates without a full menu rebuild (`ItemsPropertiesUpdated`).
 - [x] Left, right and middle click plus scroll on Linux. Double click is not
       something SNI reports.
+- [x] HiDPI: every size an icon carries is published, and SVG is handed to the
+      host to render per display scale.
+- [x] Formats: PNG, BMP, ICO and raw pixels; SVG via a private icon theme.
+- [x] Notification actions, replacement, close, and the hint set (category,
+      transient, resident, progress, sound, inline image) on Linux.
+- [x] Status, category, attention and overlay icon slots on Linux.
 - [ ] Hidden items; `visible` is currently always true.
 - [ ] Template and symbolic icons following light and dark themes.
 - [ ] Text labels next to the icon (macOS menu bar, Linux SNI title).
 - [ ] XEmbed fallback for sessions with no StatusNotifierHost.
+- [ ] BSD support: the protocol is the same, but the backend reaches for eventfd,
+      /proc and `std.os.linux` directly.
 
 ## 0.3 — production concerns
 
@@ -44,7 +52,10 @@ Linux covers most of this already; boxes stay open until all three agree.
       watcher going away).
 - [ ] Autostart helpers (registry Run key, LaunchAgent, XDG autostart).
 - [ ] Optional global hotkey registration.
-- [ ] Manual smoke-test matrix: GNOME (with AppIndicator), KDE, sway/waybar,
+- [x] Mock-host integration tests, so host-behaviour differences are covered on
+      any machine with a session bus rather than by installing four desktops.
+- [ ] Manual smoke-test matrix for the things a mock cannot judge — whether the
+      icon actually looks right: GNOME (with AppIndicator), KDE, sway/waybar,
       Windows 10/11, macOS 13+.
 - [ ] Docs site with per-platform gotchas.
 

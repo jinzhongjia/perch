@@ -33,6 +33,14 @@ pub const PixelFormat = image.PixelFormat;
 
 pub const backend = @import("backend.zig");
 
+/// Linux internals — a DBus client and the StatusNotifierItem names. Present
+/// only when targeting Linux, and not needed to use a tray: it is here so tests
+/// and advanced callers can speak to the session bus without reimplementing one.
+pub const linux = switch (@import("builtin").os.tag) {
+    .linux => @import("linux.zig"),
+    else => struct {},
+};
+
 pub const version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 };
 
 /// Whether this build has a real tray backend for the target platform.

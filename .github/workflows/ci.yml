@@ -20,6 +20,19 @@ jobs:
       - run: zig build test
       - run: zig build examples
 
+  # Drives the library through a mock StatusNotifierItem host, so the protocol
+  # behaviours real desktops differ on are covered without installing any.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: sudo apt-get update && sudo apt-get install -y dbus-x11
+      # A private bus: a real session would already own the watcher name.
+      - run: dbus-run-session -- zig build integration
+
   check:
     runs-on: ubuntu-latest
     steps:

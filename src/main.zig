@@ -17,6 +17,8 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_file_writer.interface;
     defer out.flush() catch {};
 
+    var host_present = false;
+
     try out.print("perch {f}\n", .{perch.version});
     try out.print("  target   {t}-{t}\n", .{ builtin.cpu.arch, builtin.os.tag });
     try out.print("  backend  {s} (supported: {})\n", .{ perch.backend.name, perch.supported });
@@ -27,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
             env.get("XDG_CURRENT_DESKTOP") orelse "<unset>",
             env.get("DBUS_SESSION_BUS_ADDRESS") != null,
         });
+        host_present = try reportHost(gpa, io, env, out);
     }
 
     var menu = perch.Menu.init(gpa);
@@ -55,14 +58,55 @@ pub fn main(init: std.process.Init) !void {
     };
     defer tray.destroy();
 
-    try out.print(
-        \\
-        \\  status   the icon is live — look for it in your tray
-        \\           choose Quit from its menu, or press Ctrl-C, to exit
-        \\
-    , .{});
+    if (host_present) {
+        try out.print(
+            \\
+            \\  status   the icon is live — look for it in your tray
+            \\           choose Quit from its menu, or press Ctrl-C, to exit
+            \\
+        , .{});
+    } else {
+        try out.print(
+            \\
+            \\  status   the item is published and waiting for a host to appear
+            \\           press Ctrl-C to exit
+            \\
+        , .{});
+    }
     try out.flush();
     try tray.run();
+}
+
+/// Says whether anything is listening for tray icons — the usual reason an icon
+/// never appears, and not something the tray API can report on its own.
+fn reportHost(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    out: *Io.Writer,
+) !bool {
+    const address = env.get("DBUS_SESSION_BUS_ADDRESS") orelse return false;
+
+    const conn = perch.linux.Connection.create(gpa, io, address) catch |err| {
+        try out.print("  host     cannot reach the session bus: {t}\n", .{err});
+        return false;
+    };
+    defer conn.destroy();
+
+    for (perch.linux.sni.watcher_names) |name| {
+        if (conn.nameHasOwner(name) catch false) {
+            try out.print("  host     {s} is running\n", .{name});
+            return true;
+        }
+    }
+
+    try out.print(
+        \\  host     no status notifier watcher is running, so no icon can appear
+        \\           GNOME needs the AppIndicator extension; bare X sessions need
+        \\           a tray such as snixembed, which perch does not speak yet
+        \\
+    , .{});
+    return false;
 }
 
 const Doctor = struct {

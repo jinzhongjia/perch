@@ -27,14 +27,19 @@ const Tray = tray_mod.Tray;
 
 const log = std.log.scoped(.perch);
 
-pub const item_interface = "org.kde.StatusNotifierItem";
-pub const item_path = "/StatusNotifierItem";
-pub const watcher_name = "org.kde.StatusNotifierWatcher";
-pub const watcher_path = "/StatusNotifierWatcher";
-pub const watcher_interface = "org.kde.StatusNotifierWatcher";
-pub const notifications_name = "org.freedesktop.Notifications";
-pub const notifications_path = "/org/freedesktop/Notifications";
-pub const notifications_interface = "org.freedesktop.Notifications";
+const sni = @import("../linux.zig").sni;
+
+pub const item_interface = sni.item_interface;
+pub const item_path = sni.item_path;
+pub const watcher_path = sni.watcher_path;
+pub const watcher_interface = sni.watcher_interface;
+/// The KDE name is the one nearly every host uses; the alternatives cover
+/// implementations like snixembed that picked a different bus name.
+pub const watcher_names = sni.watcher_names;
+pub const watcher_name = watcher_names[0];
+pub const notifications_name = sni.notifications_name;
+pub const notifications_path = sni.notifications_path;
+pub const notifications_interface = sni.notifications_interface;
 
 pub const Backend = struct {
     pub const supported = true;
@@ -153,12 +158,15 @@ pub const Backend = struct {
         };
         errdefer self.body.deinit();
 
-        // Watch the watcher, so a shell restart re-registers us instead of
-        // silently losing the icon.
-        conn.addMatch(
-            "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus'," ++
-                "member='NameOwnerChanged',arg0='" ++ watcher_name ++ "'",
-        ) catch {};
+        // Watch every watcher name, so a shell restart — or a host that uses one
+        // of the alternative names — re-registers us instead of silently losing
+        // the icon.
+        inline for (watcher_names) |name| {
+            conn.addMatch(
+                "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus'," ++
+                    "member='NameOwnerChanged',arg0='" ++ name ++ "'",
+            ) catch {};
+        }
 
         // Action buttons and dismissals come back as signals from the daemon.
         conn.addMatch(
@@ -170,10 +178,14 @@ pub const Backend = struct {
 
         // Starting before the desktop shell is normal, so an absent watcher is
         // not an error: NameOwnerChanged brings us back.
-        if (conn.nameHasOwner(watcher_name) catch false) {
-            self.registerWithWatcher();
+        if (self.findWatcher()) |name| {
+            self.registerWithWatcher(name);
         } else {
-            log.info("perch: no status notifier host yet, waiting for one to appear", .{});
+            log.info(
+                "perch: no status notifier host yet, waiting for one to appear " ++
+                    "(GNOME needs the AppIndicator extension)",
+                .{},
+            );
         }
         return self;
     }
@@ -581,26 +593,40 @@ pub const Backend = struct {
         const name = r.string() catch return error.Malformed;
         _ = r.string() catch return error.Malformed; // old owner
         const new_owner = r.string() catch return error.Malformed;
-        if (!std.mem.eql(u8, name, watcher_name)) return;
+
+        var is_watcher = false;
+        for (watcher_names) |candidate| {
+            if (std.mem.eql(u8, name, candidate)) is_watcher = true;
+        }
+        if (!is_watcher) return;
 
         if (new_owner.len == 0) {
             self.registered = false;
             return;
         }
-        // A new watcher took over — hand it our item.
-        self.registerWithWatcher();
+        // A watcher appeared or took over — hand it our item.
+        self.registerWithWatcher(name);
     }
 
     // -- StatusNotifierItem -------------------------------------------------
 
-    /// Sends our name to the watcher. The caller must already know a watcher is
-    /// running: probing for one blocks on a reply, which is not safe once the
-    /// event loop is serving requests.
-    fn registerWithWatcher(self: *Backend) void {
+    /// The first watcher name with an owner, if any. Blocks on a reply, so it is
+    /// only safe during setup — inside the event loop, NameOwnerChanged already
+    /// says which name appeared.
+    fn findWatcher(self: *Backend) ?[]const u8 {
+        for (watcher_names) |name| {
+            if (self.conn.nameHasOwner(name) catch false) return name;
+        }
+        return null;
+    }
+
+    /// Sends our name to `watcher`, which the caller must already know is
+    /// running.
+    fn registerWithWatcher(self: *Backend, watcher: []const u8) void {
         self.body.clearRetainingCapacity();
         self.body.string(self.service_name) catch return;
         _ = self.conn.call(.{
-            .destination = watcher_name,
+            .destination = watcher,
             .path = watcher_path,
             .interface = watcher_interface,
             .member = "RegisterStatusNotifierItem",

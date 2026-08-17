@@ -68,6 +68,26 @@ pub fn build(b: *std.Build) void {
         ).dependOn(&run_example.step);
     }
 
+    // Integration tests drive the library through a mock StatusNotifierItem
+    // host. They need a session bus of their own, since a real desktop already
+    // owns the watcher name.
+    if (target.result.os.tag == .linux) {
+        const integration = b.addExecutable(.{
+            .name = "integration",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/integration.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "perch", .module = mod }},
+            }),
+        });
+        const run_integration = b.addRunArtifact(integration);
+        b.step(
+            "integration",
+            "Run the mock-host tests (use: dbus-run-session -- zig build integration)",
+        ).dependOn(&run_integration.step);
+    }
+
     // Cross-compile every backend from one host, so a change to the macOS
     // backend fails fast on a Linux box. Built but not run.
     const check_step = b.step("check", "Compile-check the library for every supported target");
