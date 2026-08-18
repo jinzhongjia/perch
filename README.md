@@ -5,15 +5,17 @@ no GTK, no Qt, no Electron.
 
 | Platform | Backend | Status |
 | --- | --- | --- |
-| Linux | `StatusNotifierItem` over DBus | **working** |
-| Windows | `Shell_NotifyIcon` + message-only window | scaffolded |
+| Linux | `StatusNotifierItem` over DBus | **working**, verified on Plasma |
+| Windows | `Shell_NotifyIcon` + message-only window | **written, not yet run** |
 | macOS | `NSStatusItem` via the Objective-C runtime | scaffolded |
 | BSD | same protocol, but the code uses Linux syscalls | not yet |
 
-> **Status: alpha on Linux, pre-alpha elsewhere.** The Linux backend is a
-> complete, dependency-free DBus implementation — icon, menu, events and
-> notifications all work against a real host. Windows and macOS are documented
-> stubs that return `error.NotImplemented`. See [the roadmap](docs/ROADMAP.md).
+> **Status: alpha on Linux, unverified on Windows, pre-alpha on macOS.** The
+> Linux backend is a complete, dependency-free DBus implementation, verified
+> against a real host. The Windows backend is written and cross-compiles and
+> links, but has never been run on Windows — see
+> [issue #1](https://github.com/jinzhongjia/perch/issues/1) for what still needs
+> checking. macOS is a documented stub. See [the roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -105,6 +107,30 @@ perch registers with `org.kde.StatusNotifierWatcher` and falls back to the
 `org.freedesktop` and `org.x` names. GNOME has no built-in host: it needs the
 AppIndicator extension. `zig build run` reports which of these is the case.
 
+## Windows
+
+A message-only window owns one `NOTIFYICONDATAW` entry and receives the shell's
+callbacks. `NOTIFYICON_VERSION_4` is requested, so the pointer position comes
+with each event. The menu is an `HMENU` built fresh from `perch.Menu` on every
+popup, shown with `TrackPopupMenuEx`. Icons are decoded, then converted to an
+`HICON` at the size `SM_CXSMICON` reports for the current DPI. `TaskbarCreated`
+is handled, so the icon survives an Explorer restart and picks up a DPI change
+with it.
+
+What the platform does not offer, and perch therefore does not pretend to:
+
+- **Scroll events.** The shell does not deliver the wheel to tray icons, so
+  `on_scroll` never fires.
+- **Notification buttons.** Shell balloons have no actions; `Notification.actions`
+  is ignored with a warning, and a balloon click arrives as the action
+  `"default"`. Real buttons would mean WinRT toasts and an AppUserModelID.
+- **Overlay icons.** There is no overlay for a notification-area icon.
+- **`timeout_ms`.** Deprecated since Vista; the shell uses the accessibility
+  timeout instead.
+
+`Options.status` maps to the tray's own vocabulary: `.passive` hides the icon
+with `NIS_HIDDEN`, and `.needs_attention` swaps in `attention_icon`.
+
 ## Icons and HiDPI
 
 `StatusNotifierItem` publishes either a themed name the host resolves itself or
@@ -156,6 +182,8 @@ src/linux/Message.zig   DBus message header and body
 src/linux/Connection.zig session bus transport, SASL, message I/O
 src/linux/DBusMenu.zig  com.canonical.dbusmenu layout
 src/linux/IconExport.zig SVG to a private icon theme
+src/windows/win32.zig   the Win32 declarations perch needs
+src/windows/icon.zig    ARGB32 pixels to HICON
 src/main.zig            `perch` doctor CLI
 examples/basic.zig      icon, menu, clicks
 examples/rich.zig       SVG icon, notification actions, attention status

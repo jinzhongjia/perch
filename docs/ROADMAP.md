@@ -9,15 +9,16 @@ green on all five targets.
       `DBUS_SESSION_BUS_ADDRESS`, SASL EXTERNAL auth, message marshalling),
       export `/StatusNotifierItem` and `com.canonical.dbusmenu`, register with
       `org.kde.StatusNotifierWatcher`. Verified against Plasma.
-- [ ] **Windows / notification area.** Message-only window, `NIM_ADD` with
+- [~] **Windows / notification area.** Message-only window, `NIM_ADD` with
       `NOTIFYICON_VERSION_4`, `HMENU` popup via `TrackPopupMenuEx`, re-add on
-      `TaskbarCreated`.
+      `TaskbarCreated`. Written, cross-compiles and links; never run on Windows.
+      See issue #1.
 - [ ] **macOS / NSStatusItem.** `objc_msgSend` bindings, accessory activation
       policy, `NSMenu` mirroring, action target registered with `class_addMethod`.
-- [x] Icon decoding: raw PNG bytes → ARGB32 for `IconPixmap`. Windows `HICON`
-      and macOS `NSImage` still to do.
+- [x] Icon decoding: PNG, BMP and ICO to ARGB32, then to `IconPixmap` on Linux
+      and `HICON` on Windows. macOS `NSImage` still to do.
 - [x] `run` / `pump` / `stop` semantics on Linux, `stop` callable off-thread.
-- [ ] The same on Windows and macOS.
+- [ ] The same on Windows (written, unverified) and macOS.
 
 ## 0.2 — the rich surface
 

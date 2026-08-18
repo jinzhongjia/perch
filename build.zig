@@ -103,6 +103,11 @@ pub fn build(b: *std.Build) void {
                 .optimize = .Debug,
             }),
         });
-        check_step.dependOn(&compile.step);
+        // Depending on the emitted binary forces a link, which is what proves
+        // the platform declarations resolve against the real import libraries.
+        // Compiling alone would not catch a misspelled entry point.
+        check_step.dependOn(&b.addInstallArtifact(compile, .{
+            .dest_dir = .{ .override = .{ .custom = "check" } },
+        }).step);
     }
 }
