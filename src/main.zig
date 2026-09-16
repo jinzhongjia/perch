@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_file_writer.interface;
     defer out.flush() catch {};
 
-    var host_present = false;
+    var host_present = builtin.os.tag == .macos or builtin.os.tag == .windows;
 
     try out.print("perch {f}\n", .{perch.version});
     try out.print("  target   {t}-{t}\n", .{ builtin.cpu.arch, builtin.os.tag });
@@ -45,15 +45,13 @@ pub fn main(init: std.process.Init) !void {
         .app_id = "dev.perch.doctor",
         .title = "perch",
         .tooltip = "perch doctor",
-        .icon = .{ .named = "applications-system" },
+        .icon = .{ .named = if (builtin.os.tag == .macos) "gearshape" else "applications-system" },
         .menu = &menu,
         .linux = .{ .environ = init.minimal.environ },
         .handler = .{ .ctx = &doctor, .on_activate = Doctor.onActivate },
     }) catch |err| {
         try out.print("\n  status   cannot create a tray: {t}\n", .{err});
-        if (perch.backend.Impl.supported) {
-            try out.print("           the {s} backend is still a stub; see docs/ROADMAP.md\n", .{perch.backend.name});
-        }
+        try out.print("           check the desktop session and platform requirements in README.md\n", .{});
         return;
     };
     defer tray.destroy();

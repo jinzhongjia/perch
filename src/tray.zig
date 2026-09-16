@@ -110,7 +110,8 @@ pub const Category = enum {
     }
 };
 
-/// Callbacks are invoked on the thread that called `Tray.run`.
+/// Callbacks run on the event-loop thread (`run`/`pump`, or the host loop).
+/// On macOS this must be the main thread.
 pub const Handler = struct {
     ctx: ?*anyopaque = null,
     /// The icon is live and the platform is ready for updates.
@@ -146,8 +147,8 @@ pub const Options = struct {
     /// value; `std.testing.io` in tests.
     io: std.Io,
     /// Stable reverse-DNS identifier, e.g. `"dev.example.myapp"`. Used for the
-    /// DBus service name on Linux, the bundle-ish toast id on Windows, and the
-    /// notification authority on macOS.
+    /// DBus service name on Linux and the bundle-ish toast id on Windows.
+    /// macOS notifications require a real .app bundle with a matching bundle id.
     app_id: []const u8,
     /// Text shown next to the icon where the platform supports it.
     title: []const u8 = "",
@@ -173,6 +174,8 @@ pub const Options = struct {
 };
 
 /// A live tray icon. Create with `Tray.create`, drive with `Tray.run`.
+/// On macOS, all operations except `stop` must run on the main thread,
+/// including creation and destruction.
 pub const Tray = struct {
     gpa: std.mem.Allocator,
     io: std.Io,

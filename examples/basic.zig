@@ -15,7 +15,7 @@ const App = struct {
         tray.notify(.{
             .title = "perch",
             .body = "Sitting in the tray.",
-        }) catch {};
+        }) catch |err| std.log.warn("notification: {t}; {s}", .{ err, tray.lastDiagnostic() orelse "no platform diagnostic" });
     }
 
     fn onActivate(ctx: ?*anyopaque, tray: *perch.Tray, id: perch.MenuItem.Id) void {
@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
         .app_id = "dev.perch.example.basic",
         .title = "perch",
         .tooltip = "perch example",
-        .icon = .{ .named = "applications-system" },
+        .icon = .{ .named = if (@import("builtin").os.tag == .macos) "gearshape" else "applications-system" },
         .menu = &menu,
         // Left click opens the menu; on_click then only sees the other buttons.
         // Set this to `.activate` to receive left clicks instead.

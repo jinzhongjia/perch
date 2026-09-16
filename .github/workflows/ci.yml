@@ -34,7 +34,9 @@ jobs:
       - run: dbus-run-session -- zig build integration
 
   check:
-    runs-on: ubuntu-latest
+    # Linking AppKit/UserNotifications requires Apple's SDK. This host can also
+    # cross-link Linux and Windows through Zig's bundled target support.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2

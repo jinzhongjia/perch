@@ -13,22 +13,26 @@ green on all five targets.
       `NOTIFYICON_VERSION_4`, `HMENU` popup via `TrackPopupMenuEx`, re-add on
       `TaskbarCreated`. Written, cross-compiles and links; never run on Windows.
       See issue #1.
-- [ ] **macOS / NSStatusItem.** `objc_msgSend` bindings, accessory activation
-      policy, `NSMenu` mirroring, action target registered with `class_addMethod`.
-- [x] Icon decoding: PNG, BMP and ICO to ARGB32, then to `IconPixmap` on Linux
-      and `HICON` on Windows. macOS `NSImage` still to do.
-- [x] `run` / `pump` / `stop` semantics on Linux, `stop` callable off-thread.
-- [ ] The same on Windows (written, unverified) and macOS.
+- [x] **macOS / NSStatusItem.** Pure Zig Objective-C runtime bridge, accessory
+      activation policy, native menu tree, input callbacks and live updates.
+      Native runtime smoke verified on Apple Silicon; x86_64 links.
+- [x] Icon decoding: PNG, BMP and ICO to ARGB32, then to `IconPixmap` on Linux,
+      `HICON` on Windows and multi-representation `NSImage` on macOS.
+- [x] `run` / `pump` / `stop` on Linux and macOS; off-thread stop verified.
+- [ ] Windows event-loop runtime verification (implementation is written).
 
 ## 0.2 — the rich surface
 
 Linux covers most of this already; boxes stay open until all three agree.
 
-- [x] Notifications on Linux (`org.freedesktop.Notifications`, urgency hints).
-      Actions, and the other two backends, still to do.
+- [x] Notifications on Linux, including actions and richer hints.
+- [x] macOS UserNotifications: permission requests, attachments, actions,
+      replacement and withdrawal implemented. Native smoke covers attachment
+      construction and denial handling; authorized delivery, both action
+      callbacks, replacement and close manually verified on an M4 Mac.
 - [x] Submenu, checkbox, radio and separator parity on Linux; disabled items.
-- [x] Accelerator parsing, rendered as dbusmenu shortcuts. Still to do:
-      per-platform rendering (Ctrl → ⌘ on macOS).
+- [x] Accelerator parsing: dbusmenu shortcuts and native macOS key equivalents
+      (Ctrl → Command unless Meta is explicit).
 - [x] Menu-item icons on Linux (`icon-name` and PNG `icon-data`).
 - [x] Live updates without a full menu rebuild (`ItemsPropertiesUpdated`).
 - [x] Left, right and middle click plus scroll on Linux. Double click is not
@@ -40,15 +44,16 @@ Linux covers most of this already; boxes stay open until all three agree.
       transient, resident, progress, sound, inline image) on Linux.
 - [x] Status, category, attention and overlay icon slots on Linux.
 - [ ] Hidden items; `visible` is currently always true.
-- [ ] Template and symbolic icons following light and dark themes.
-- [ ] Text labels next to the icon (macOS menu bar, Linux SNI title).
+- [x] macOS template images following light/dark appearance.
+- [x] Text labels next to the icon on macOS; Linux SNI title.
 - [ ] XEmbed fallback for sessions with no StatusNotifierHost.
 - [ ] BSD support: the protocol is the same, but the backend reaches for eventfd,
       /proc and `std.os.linux` directly.
 
 ## 0.3 — production concerns
 
-- [ ] Thread safety audit; `stop` and setters callable off the loop thread.
+- [ ] Cross-platform thread safety audit. macOS requires the main thread for
+      everything except `stop`; setters are not advertised as thread-safe.
 - [ ] Host appear/disappear recovery (Explorer restart, desktop shell reload,
       watcher going away).
 - [ ] Autostart helpers (registry Run key, LaunchAgent, XDG autostart).

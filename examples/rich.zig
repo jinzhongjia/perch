@@ -28,6 +28,7 @@ const attention_svg =
 const App = struct {
     /// Tags name a notification without waiting for the daemon to answer.
     const download_tag: perch.Notification.Tag = 1;
+    const update_tag: perch.Notification.Tag = 2;
 
     ids: struct {
         notify: perch.MenuItem.Id = 0,
@@ -55,6 +56,7 @@ const App = struct {
             tray.notify(.{
                 .title = "Update available",
                 .body = "perch 0.1 is ready to install.",
+                .tag = update_tag,
                 .urgency = .critical,
                 .resident = true,
                 .actions = &.{

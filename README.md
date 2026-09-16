@@ -7,15 +7,15 @@ no GTK, no Qt, no Electron.
 | --- | --- | --- |
 | Linux | `StatusNotifierItem` over DBus | **working**, verified on Plasma |
 | Windows | `Shell_NotifyIcon` + message-only window | **written, not yet run** |
-| macOS | `NSStatusItem` via the Objective-C runtime | scaffolded |
+| macOS | `NSStatusItem` via the Objective-C runtime | **working**, tray and notification interactions verified on M4 |
 | BSD | same protocol, but the code uses Linux syscalls | not yet |
 
-> **Status: alpha on Linux, unverified on Windows, pre-alpha on macOS.** The
-> Linux backend is a complete, dependency-free DBus implementation, verified
-> against a real host. The Windows backend is written and cross-compiles and
-> links, but has never been run on Windows — see
-> [issue #1](https://github.com/jinzhongjia/perch/issues/1) for what still needs
-> checking. macOS is a documented stub. See [the roadmap](docs/ROADMAP.md).
+> **Status: alpha on Linux and macOS, unverified on Windows.** Linux is verified
+> against Plasma. macOS has a pure Zig AppKit backend, with tray interactions,
+> notification delivery, action callbacks and tagged replacement/close verified
+> on an M4 Mac. Windows cross-compiles and links but has not run on Windows — see
+> [issue #1](https://github.com/jinzhongjia/perch/issues/1).
+> See [the roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -66,9 +66,11 @@ loop instead of owning it.
 
 ## Design notes
 
-- **Allocator- and `Io`-explicit, no globals.** Every allocation goes through the
-  allocator you pass in, and all platform I/O goes through the `std.Io` you pass
-  in. A process can host more than one tray.
+- **Allocator- and `Io`-explicit.** Models and shared decoders use the supplied
+  allocator; Linux transport uses the supplied `std.Io`. Native frameworks own
+  their objects and event queues. macOS asynchronous notification state uses
+  the C heap so completion blocks can outlive `Tray.destroy`. Multiple tray
+  icons are supported; macOS notification authority is exclusive per process.
 - **Slices are borrowed.** Menu labels, tooltips and icon bytes are not copied;
   keep them alive while the menu is attached. `@embedFile` and string literals
   are the intended case.
@@ -131,6 +133,85 @@ What the platform does not offer, and perch therefore does not pretend to:
 `Options.status` maps to the tray's own vocabulary: `.passive` hides the icon
 with `NIS_HIDDEN`, and `.needs_attention` swaps in `attention_icon`.
 
+## macOS
+
+Pure Zig calls the system Objective-C runtime, AppKit, Foundation,
+CoreGraphics and UserNotifications. No Objective-C source, wrapper dependency
+or third-party UI toolkit is required. Install Apple's Command Line Tools or
+Xcode for the SDK. SF Symbols and notifications require macOS 11 or newer;
+symbol names and SVG features depend on the installed OS.
+
+Implemented: `NSStatusItem` icons and titles, optional tooltips, native menus
+with submenus, separators, disabled items, checkboxes, radio groups, item
+icons and keyboard equivalents; left/right/middle clicks, modifier keys and
+screen positions, both scroll axes, live updates, attention/overlay images,
+and passive visibility. `Ctrl+Q` renders as Command-Q; use `Control+Q` for
+literal Control, or `Meta+Ctrl+Q` for Command-Control. These are menu keyboard
+equivalents, not global hotkeys. Screen coordinates use AppKit's bottom-left
+origin. Fractional trackpad deltas accumulate until they can be reported as
+integer `ScrollEvent.delta` values.
+
+**Create, update, run, pump and destroy on the main thread.** Only `stop` is
+thread-safe. Standalone programs create an accessory application without a
+Dock icon; an existing application's activation policy and delegate are left
+alone. `pump` integrates with a host event loop; a common-mode timer drains
+notification callbacks while idle or while a menu is open.
+
+`Icon.named` means an SF Symbol such as `"gearshape"`, not a Linux theme name.
+Native AppKit image names such as `"NSActionTemplate"` also work. PNG, BMP,
+ICO, paths, raw pixels, multi-size sets and native SVG decoding are supported.
+`Icon.template` follows the menu bar appearance; overlays are composited at
+the actual drawing scale. An unsupported image returns an error rather than
+silently replacing it with a different icon.
+
+### macOS notifications
+
+The tray itself runs as an ordinary executable, but **notifications require
+a real `.app` bundle whose `CFBundleIdentifier` matches `Options.app_id`**.
+Build and open the rich example:
+
+```sh
+zig build macos-app
+codesign --force --sign - zig-out/Perch.app
+open zig-out/Perch.app
+```
+
+The first notification requests system permission. Bare executables fail
+safely without calling the bundle-dependent notification center. A successful
+`notify` means the request was queued, not that permission or delivery was
+confirmed: asynchronous failures are logged and available through
+`Tray.lastDiagnostic()`. After denial, enable notifications in System Settings
+and recreate the tray. Focus and system presentation settings still govern
+whether a banner appears.
+
+Titles, plain-text bodies, native sounds, image attachments, action buttons,
+tagged replacement/withdrawal and action/dismiss callbacks are implemented.
+All handlers run on the main tray thread. Apple does not provide a reliable
+expiration callback, so `on_notification_closed(.expired)` is not fabricated.
+The application icon is used; `Notification.icon`, HTML formatting, Linux
+categories/urgency, timeout, transient/resident and progress hints are not
+expressed by this backend. `sound_name` is a bundled macOS sound filename,
+not a Linux sound-theme name.
+
+Only one live tray may own notification authority. An existing host
+`UNUserNotificationCenter` delegate is never replaced. Existing notification
+categories are preserved/restored; the host must not concurrently edit them
+while perch owns the center. Notification actions do not restore application
+state after process exit; registration and routing are scoped to the live tray.
+
+Verification on Apple Silicon covered native popup open/close, checkbox/radio
+and keyboard activation, disabled items, synthetic native click/scroll events,
+image updates and rendering, multiple trays, callback-triggered destruction,
+`pump`/`run`, and off-thread stop. An ad-hoc-signed `.app` exercised attachment
+construction, queued replacement/close and denial handling. Manual verification
+on an M4 Mac then confirmed checkbox/radio menus, quit, vertical scrolling,
+authorized banner delivery, both notification action callbacks, and tagged
+replacement/close. Horizontal scrolling has synthetic-event coverage but was
+not manually tested with the available mouse. Intel Macs, other macOS versions,
+appearance switching and multiple displays still need systematic validation.
+Automated visual inspection used an in-process AppKit button snapshot;
+notification appearance was also confirmed manually.
+
 ## Icons and HiDPI
 
 `StatusNotifierItem` publishes either a themed name the host resolves itself or
@@ -184,6 +265,9 @@ src/linux/DBusMenu.zig  com.canonical.dbusmenu layout
 src/linux/IconExport.zig SVG to a private icon theme
 src/windows/win32.zig   the Win32 declarations perch needs
 src/windows/icon.zig    ARGB32 pixels to HICON
+src/macos/objc.zig      typed Objective-C runtime ABI
+src/macos/image.zig     native images and resolution-independent overlays
+src/macos/notifications.zig UserNotifications, blocks and callback lifetime
 src/main.zig            `perch` doctor CLI
 examples/basic.zig      icon, menu, clicks
 examples/rich.zig       SVG icon, notification actions, attention status
@@ -226,11 +310,14 @@ zig build check      # compile every backend for every supported target
 zig build run        # perch doctor: what works on this machine
 zig build example-basic
 zig build example-rich
+zig build macos-app   # macOS: build zig-out/Perch.app for notification use
 dbus-run-session -- zig build integration   # mock-host tests
 ```
 
-`zig build check` cross-compiles all backends from a single host, so a change to
-the macOS backend fails fast on a Linux box.
+`zig build check` compiles and links all five targets. On macOS the build
+discovers the selected SDK with `xcrun`; elsewhere supply an Apple SDK with
+`-Dmacos-sdk=/path/to/MacOSX.sdk`. CI runs the cross-link job on macOS so the
+framework declarations are checked against Apple's SDK, not just compiled.
 
 `zig build integration` drives the library through a mock StatusNotifierItem host
 and notification daemon on a private bus. Real desktops differ in how they fetch
