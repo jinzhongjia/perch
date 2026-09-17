@@ -13,6 +13,7 @@ const check_targets = [_][]const u8{
 const examples = [_][]const u8{
     "basic",
     "rich",
+    "behaviors",
 };
 
 pub fn build(b: *std.Build) void {

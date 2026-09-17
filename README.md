@@ -271,6 +271,7 @@ src/macos/notifications.zig UserNotifications, blocks and callback lifetime
 src/main.zig            `perch` doctor CLI
 examples/basic.zig      icon, menu, clicks
 examples/rich.zig       SVG icon, notification actions, attention status
+examples/behaviors.zig  interactive Linux host and notification timing probes
 tests/MockHost.zig      a fake host and notification daemon
 tests/integration.zig   host-behaviour scenarios
 ```
@@ -310,6 +311,7 @@ zig build check      # compile every backend for every supported target
 zig build run        # perch doctor: what works on this machine
 zig build example-basic
 zig build example-rich
+zig build example-behaviors  # Linux: interactive host-behavior probes
 zig build macos-app   # macOS: build zig-out/Perch.app for notification use
 dbus-run-session -- zig build integration   # mock-host tests
 ```
@@ -326,6 +328,31 @@ a time, `AboutToShow` first — and only one desktop is ever installed on a give
 machine. Those behaviours are modelled in `tests/MockHost.zig` instead, so the
 matrix runs anywhere a session bus can start, CI included. It needs its own bus
 because a real session already owns the watcher name.
+
+### Interactive Linux checks
+
+Run `zig build example-behaviors` in the real desktop session, **without**
+`dbus-run-session`. On GNOME, enable AppIndicator first. The gear icon holds the
+controls; the separate blue-plus icon is the probe. Controls remain available
+when the probe is passive or has no menu. Choose **Quit both trays** to exit.
+
+| Controls | Observe on the probe |
+| --- | --- |
+| Icons and appearance | Switch named/SVG/PNG/raw/multi-size icons; PNG and raw should show the same green image with a white center. The multi-size frames are orange at 16px and purple at 32px, revealing which size the host selects. Toggle the red overlay, title, tooltip and passive status. |
+| Menus and activation | Disable/enable and rename the sample, append numbered items, inspect menu icons and nested checkboxes. Detached menus should disappear; reattachment should restore them. Recreate the probe to compare left-click policies, with and without a menu. |
+| Request probe showMenu | Check whether the host opens the probe menu; GNOME AppIndicator v64 does not handle this request. |
+| Post / replace with next visible revision | Wait for delivery between clicks. The same notification should update its body rather than accumulate. Close it and check the `reason=closed` callback. |
+| Notification race cases | Three immediate posts with one fresh tag should leave only the final revision. Posting then immediately closing a fresh tag should leave no persistent notification. These probes currently expose Linux backend timing bugs; they are not passing assertions. |
+| Image and markup hints | Inspect bold/italic text and the image. Rendering of hints is host-dependent. |
+
+Click, double-click, middle-click and scroll on the probe while watching its
+callback logs. The host may override the requested click policy; opening a menu
+locally need not produce a click callback. Also repeat appearance checks at your
+display scales, and check recovery after disabling/re-enabling the tray extension.
+Log messages confirm requests or callbacks, not visual success. Record each case
+as passed, backend failure, host limitation or untested. Dismiss leftover race-test
+notifications manually; once a notification is untracked, this example cannot
+withdraw it by tag.
 
 ## License
 
