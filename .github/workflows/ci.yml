@@ -16,9 +16,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - run: zig build test
       - run: zig build examples
+      - name: Native Windows tray smoke tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Get-Process explorer -ErrorAction SilentlyContinue) {
+            zig build windows-smoke
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Output "Skipping shell smoke tests: no Explorer session. Native menu and Unicode tests still run in zig build test."
+          }
 
   # Drives the library through a mock StatusNotifierItem host, so the protocol
   # behaviours real desktops differ on are covered without installing any.
@@ -28,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - run: sudo apt-get update && sudo apt-get install -y dbus-x11
       # A private bus: a real session would already own the watcher name.
       - run: dbus-run-session -- zig build integration
@@ -41,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       # Compile every backend for every supported target from one host.
       - run: zig build check
       - run: zig fmt --check .

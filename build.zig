@@ -6,6 +6,7 @@ const check_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
     "x86_64-windows-gnu",
+    "aarch64-windows-gnu",
     "aarch64-macos",
     "x86_64-macos",
 };
@@ -46,7 +47,6 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", "Run the perch doctor").dependOn(&run_cmd.step);
 
     // Tests.
@@ -117,9 +117,23 @@ pub fn build(b: *std.Build) void {
         ).dependOn(&run_integration.step);
     }
 
+    if (target.result.os.tag == .windows) {
+        const smoke = b.addTest(.{
+            .name = "windows-smoke",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/windows_smoke.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        b.step("windows-smoke", "Run native Windows tray tests (requires Explorer)").dependOn(&b.addRunArtifact(smoke).step);
+    }
+
     // Cross-compile every backend from one host, so a change to the macOS
     // backend fails fast on a Linux box. Built but not run.
     const check_step = b.step("check", "Compile-check the library for every supported target");
+    const check_windows = b.step("check-windows", "Compile and link both Windows targets");
+    const check_linux = b.step("check-linux", "Compile and link both Linux targets");
     for (check_targets) |triple| {
         const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
             std.debug.panic("bad check target '{s}': {s}", .{ triple, @errorName(err) });
@@ -136,9 +150,15 @@ pub fn build(b: *std.Build) void {
         // Depending on the emitted binary forces a link, which is what proves
         // the platform declarations resolve against the real import libraries.
         // Compiling alone would not catch a misspelled entry point.
-        check_step.dependOn(&b.addInstallArtifact(compile, .{
+        const install = b.addInstallArtifact(compile, .{
             .dest_dir = .{ .override = .{ .custom = "check" } },
-        }).step);
+        });
+        check_step.dependOn(&install.step);
+        switch (query.os_tag.?) {
+            .windows => check_windows.dependOn(&install.step),
+            .linux => check_linux.dependOn(&install.step),
+            else => {},
+        }
     }
 }
 

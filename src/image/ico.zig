@@ -31,7 +31,7 @@ pub fn entries(gpa: std.mem.Allocator, data: []const u8) Error![]Entry {
     if (data.len < dir_header_len) return error.UnknownFormat;
     if (std.mem.readInt(u16, data[0..2], .little) != 0) return error.UnknownFormat;
     const kind = std.mem.readInt(u16, data[2..4], .little);
-    if (kind != @intFromEnum(Kind.icon) and kind != @intFromEnum(Kind.cursor)) {
+    if (kind != @backingInt(Kind.icon) and kind != @backingInt(Kind.cursor)) {
         return error.UnknownFormat;
     }
 

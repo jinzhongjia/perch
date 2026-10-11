@@ -87,7 +87,7 @@ pub fn parse(buffer: []const u8) ParseError!Message {
 
     const endian: std.builtin.Endian = if (prefix[0] == 'l') .little else .big;
     var self: Message = .{
-        .type = @enumFromInt(prefix[1]),
+        .type = @fromBackingInt(@intCast(prefix[1])),
         .flags = @bitCast(prefix[2]),
         .serial = std.mem.readInt(u32, prefix[8..12], endian),
         .endian = endian,
@@ -100,7 +100,7 @@ pub fn parse(buffer: []const u8) ParseError!Message {
     const fields_end = try r.arrayBegin("(yv)");
     while (r.pos < fields_end) {
         try r.structBegin();
-        const code: Field = @enumFromInt(try r.byte());
+        const code: Field = @fromBackingInt(@intCast(try r.byte()));
         const value_sig = try r.variantBegin();
         switch (code) {
             .path => self.path = try expectAndRead(&r, value_sig, "o"),
@@ -137,7 +137,7 @@ fn expectAndRead(r: *wire.Reader, actual_sig: []const u8, expected_sig: []const 
 /// marshalled; its signature has to match `signature`.
 pub fn writeTo(self: Message, out: *wire.Writer) wire.Writer.Error!void {
     try out.byte('l');
-    try out.byte(@intFromEnum(self.type));
+    try out.byte(@backingInt(self.type));
     try out.byte(@bitCast(self.flags));
     try out.byte(protocol_version);
     try out.int(u32, @intCast(self.body.len));
@@ -150,14 +150,14 @@ pub fn writeTo(self: Message, out: *wire.Writer) wire.Writer.Error!void {
     if (self.error_name) |v| try writeStringField(out, .error_name, "s", v);
     if (self.reply_serial) |v| {
         try out.structBegin();
-        try out.byte(@intFromEnum(Field.reply_serial));
+        try out.byte(@backingInt(Field.reply_serial));
         try out.variantUint32(v);
     }
     if (self.destination) |v| try writeStringField(out, .destination, "s", v);
     if (self.sender) |v| try writeStringField(out, .sender, "s", v);
     if (self.signature) |v| {
         try out.structBegin();
-        try out.byte(@intFromEnum(Field.signature));
+        try out.byte(@backingInt(Field.signature));
         try out.variantBegin("g");
         try out.signature(v);
     }
@@ -174,7 +174,7 @@ fn writeStringField(
     value: []const u8,
 ) wire.Writer.Error!void {
     try out.structBegin();
-    try out.byte(@intFromEnum(code));
+    try out.byte(@backingInt(code));
     try out.variantBegin(value_sig);
     try out.string(value);
 }

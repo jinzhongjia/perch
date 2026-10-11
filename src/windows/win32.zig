@@ -53,6 +53,7 @@ pub const MSG = extern struct {
     lParam: LPARAM,
     time: DWORD,
     pt: POINT,
+    lPrivate: DWORD,
 };
 
 /// `szTip` is 128 wide characters and `szInfo` 256, both nul-terminated, so the
@@ -262,6 +263,11 @@ pub extern "user32" fn TrackPopupMenuEx(HMENU, UINT, i32, i32, HWND, ?*TPMPARAMS
 pub extern "user32" fn SetForegroundWindow(HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn GetCursorPos(*POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetSystemMetrics(i32) callconv(.winapi) i32;
+pub extern "user32" fn GetParent(HWND) callconv(.winapi) ?HWND;
+pub extern "user32" fn IsWindowVisible(HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub extern "user32" fn GetMenuItemCount(HMENU) callconv(.winapi) i32;
+pub extern "user32" fn GetMenuItemInfoW(HMENU, UINT, BOOL, *MENUITEMINFOW) callconv(.winapi) BOOL;
 
 pub extern "gdi32" fn CreateDIBSection(
     hdc: ?HDC,
@@ -289,18 +295,20 @@ pub fn smallIconSize() u32 {
 pub fn copyWide(dest: []u16, source: []const u8) void {
     @memset(dest, 0);
     if (dest.len == 0) return;
-    const written = std.unicode.utf8ToUtf16Le(dest[0 .. dest.len - 1], source) catch blk: {
-        // Invalid UTF-8 should not lose the whole string; take what converts.
-        var count: usize = 0;
-        var it = std.unicode.Utf8Iterator{ .bytes = source, .i = 0 };
-        while (it.nextCodepoint()) |cp| {
-            if (cp > 0xffff or count + 1 >= dest.len) break;
-            dest[count] = @intCast(cp);
-            count += 1;
-        }
-        break :blk count;
-    };
-    dest[@min(written, dest.len - 1)] = 0;
+    var input: usize = 0;
+    var output: usize = 0;
+    while (input < source.len) {
+        // Keep the valid prefix on malformed input, and never split a UTF-16
+        // surrogate pair or give the converter an undersized destination.
+        const len = std.unicode.utf8ByteSequenceLength(source[input]) catch break;
+        if (len > source.len - input) break;
+        const cp = std.unicode.utf8Decode(source[input..][0..len]) catch break;
+        const units: usize = if (cp > 0xffff) 2 else 1;
+        if (units > dest.len - 1 - output) break;
+        _ = std.unicode.utf8ToUtf16Le(dest[output..][0..units], source[input..][0..len]) catch unreachable;
+        input += len;
+        output += units;
+    }
 }
 
 test "copyWide truncates and terminates" {
@@ -315,6 +323,20 @@ test "copyWide truncates and terminates" {
     var empty: [1]u16 = undefined;
     copyWide(&empty, "x");
     try std.testing.expectEqual(@as(u16, 0), empty[0]);
+}
+
+test "copyWide preserves Unicode boundaries and tolerates invalid UTF-8" {
+    var buffer: [5]u16 = undefined;
+    copyWide(&buffer, "中😀ab");
+    try std.testing.expectEqualSlices(u16, &.{ 0x4e2d, 0xd83d, 0xde00, 'a', 0 }, &buffer);
+    var short: [3]u16 = undefined;
+    copyWide(&short, "a😀");
+    try std.testing.expectEqualSlices(u16, &.{ 'a', 0, 0 }, &short);
+    copyWide(&buffer, "ok\xffbad");
+    try std.testing.expectEqualSlices(u16, &.{ 'o', 'k', 0, 0, 0 }, &buffer);
+    copyWide(&buffer, "a\xf0\x9f");
+    try std.testing.expectEqualSlices(u16, &.{ 'a', 0, 0, 0, 0 }, &buffer);
+    copyWide(&.{}, "anything");
 }
 
 test "the notify structure matches the documented layout" {

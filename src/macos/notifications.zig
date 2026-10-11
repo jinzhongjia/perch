@@ -526,7 +526,7 @@ fn makeAttachment(state: *State, owner: *Tray, icon: @import("../icon.zig").Icon
         return error.PlatformFailure;
     }
     var directory_buffer: [4096]u8 = undefined;
-    const directory = std.fmt.bufPrintZ(&directory_buffer, "{s}perch-notification-XXXXXX", .{objc.utf8(NSTemporaryDirectory())}) catch return error.PlatformFailure;
+    const directory = std.mem.printSentinel(&directory_buffer, "{s}perch-notification-XXXXXX", .{objc.utf8(NSTemporaryDirectory())}, 0) catch return error.PlatformFailure;
     if (mkdtemp(directory.ptr) == null) {
         state.fail("Unable to create private notification attachment directory", null);
         return error.PlatformFailure;

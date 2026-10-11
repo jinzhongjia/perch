@@ -303,7 +303,7 @@ fn buildPng(
     std.mem.writeInt(u32, ihdr[0..4], width, .big);
     std.mem.writeInt(u32, ihdr[4..8], height, .big);
     ihdr[8] = depth;
-    ihdr[9] = @intFromEnum(color);
+    ihdr[9] = @backingInt(color);
     ihdr[10] = 0;
     ihdr[11] = 0;
     ihdr[12] = 0;

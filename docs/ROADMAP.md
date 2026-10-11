@@ -1,7 +1,7 @@
 # Roadmap
 
 Ordered roughly by dependency. Each milestone should keep `zig build check`
-green on all five targets.
+green on all six targets.
 
 ## 0.1 — a visible icon with a working menu
 
@@ -9,17 +9,18 @@ green on all five targets.
       `DBUS_SESSION_BUS_ADDRESS`, SASL EXTERNAL auth, message marshalling),
       export `/StatusNotifierItem` and `com.canonical.dbusmenu`, register with
       `org.kde.StatusNotifierWatcher`. Verified against Plasma.
-- [~] **Windows / notification area.** Message-only window, `NIM_ADD` with
+- [x] **Windows / notification area.** Hidden top-level window, `NIM_ADD` with
       `NOTIFYICON_VERSION_4`, `HMENU` popup via `TrackPopupMenuEx`, re-add on
-      `TaskbarCreated`. Written, cross-compiles and links; never run on Windows.
-      See issue #1.
+      `TaskbarCreated`. Native smoke verified on Windows 11 x64; ARM64 links.
+      Physical popup selection and real Explorer restart still need manual tests.
 - [x] **macOS / NSStatusItem.** Pure Zig Objective-C runtime bridge, accessory
       activation policy, native menu tree, input callbacks and live updates.
       Native runtime smoke verified on Apple Silicon; x86_64 links.
 - [x] Icon decoding: PNG, BMP and ICO to ARGB32, then to `IconPixmap` on Linux,
       `HICON` on Windows and multi-representation `NSImage` on macOS.
-- [x] `run` / `pump` / `stop` on Linux and macOS; off-thread stop verified.
-- [ ] Windows event-loop runtime verification (implementation is written).
+- [x] `run` / `pump` / `stop` on Linux, Windows and macOS; off-thread stop verified.
+- [x] Windows event-loop runtime verification, including multiple trays and
+      stopping without leaving `WM_QUIT` in the shared thread queue.
 
 ## 0.2 — the rich surface
 

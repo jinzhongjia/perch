@@ -1,8 +1,8 @@
-//! Windows backend: a hidden message-only window owning a `NOTIFYICONDATAW`
+//! Windows backend: a hidden top-level window owning a `NOTIFYICONDATAW`
 //! entry in the shell notification area, with an `HMENU` popup.
 //!
 //! The shell talks to a tray icon through a window message, so everything hangs
-//! off one message-only window: mouse events, balloon notifications and the
+//! off one hidden window: mouse events, balloon notifications and the
 //! `TaskbarCreated` broadcast that says Explorer restarted and the icon has to be
 //! added again.
 
@@ -86,7 +86,8 @@ pub const Backend = struct {
             win32.CW_USEDEFAULT,
             0,
             0,
-            win32.HWND_MESSAGE,
+            // Message-only windows never receive TaskbarCreated broadcasts.
+            null,
             null,
             instance,
             null,
@@ -94,7 +95,6 @@ pub const Backend = struct {
             owner.last_diagnostic = "cannot create the message window";
             return error.PlatformFailure;
         };
-        errdefer _ = win32.DestroyWindow(window);
 
         var self: Backend = .{
             .owner = owner,
@@ -104,12 +104,13 @@ pub const Backend = struct {
                 std.unicode.utf8ToUtf16LeStringLiteral("TaskbarCreated"),
             ),
         };
-
-        // The window procedure reaches the backend through the owning tray.
-        _ = win32.SetWindowLongPtrW(window, GWLP_USERDATA, @bitCast(@intFromPtr(owner)));
+        errdefer self.deinit();
 
         try self.loadIcons();
         try self.addIcon();
+        // Do not route synchronous initialization messages to owner.impl,
+        // which is not assigned until init returns.
+        _ = win32.SetWindowLongPtrW(window, GWLP_USERDATA, @bitCast(@intFromPtr(owner)));
         return self;
     }
 
@@ -117,6 +118,7 @@ pub const Backend = struct {
     const GWLP_USERDATA: i32 = -21;
 
     pub fn deinit(self: *Backend) void {
+        _ = win32.SetWindowLongPtrW(self.window, GWLP_USERDATA, 0);
         var data = self.iconData(win32.NIF_MESSAGE);
         _ = win32.Shell_NotifyIconW(win32.NIM_DELETE, &data);
 
@@ -144,7 +146,7 @@ pub const Backend = struct {
     }
 
     /// Windows has no overlay for notification-area icons; the closest thing is
-    /// a taskbar button overlay, which a message-only window does not have.
+    /// a taskbar button overlay, which this hidden window does not have.
     pub fn setOverlayIcon(self: *Backend, icon: ?Icon) Error!void {
         _ = self;
         _ = icon;
@@ -234,17 +236,17 @@ pub const Backend = struct {
 
     pub fn run(self: *Backend) Error!void {
         if (self.owner.handler.on_ready) |cb| cb(self.owner.handler.ctx, self.owner);
+        defer if (self.owner.handler.on_quit) |cb| cb(self.owner.handler.ctx, self.owner);
 
         var message: win32.MSG = undefined;
         while (!self.stopping) {
             const result = win32.GetMessageW(&message, null, 0, 0);
             // GetMessage returns -1 on error and 0 on WM_QUIT.
-            if (@intFromEnum(result) <= 0) break;
+            if (@backingInt(result) == -1) return error.PlatformFailure;
+            if (@backingInt(result) == 0) break;
             _ = win32.TranslateMessage(&message);
             _ = win32.DispatchMessageW(&message);
         }
-
-        if (self.owner.handler.on_quit) |cb| cb(self.owner.handler.ctx, self.owner);
     }
 
     pub fn pump(self: *Backend) Error!void {
@@ -304,9 +306,11 @@ pub const Backend = struct {
 
     fn addIcon(self: *Backend) Error!void {
         var data = self.iconData(
-            win32.NIF_MESSAGE | win32.NIF_ICON | win32.NIF_TIP | win32.NIF_SHOWTIP,
+            win32.NIF_MESSAGE | win32.NIF_ICON | win32.NIF_TIP | win32.NIF_SHOWTIP | win32.NIF_STATE,
         );
         win32.copyWide(&data.szTip, self.tooltipText());
+        data.dwStateMask = win32.NIS_HIDDEN;
+        data.dwState = if (self.owner.options.status == .passive) win32.NIS_HIDDEN else 0;
 
         if (!win32.Shell_NotifyIconW(win32.NIM_ADD, &data).toBool()) {
             self.owner.last_diagnostic = "the shell refused to add the tray icon";
@@ -317,7 +321,10 @@ pub const Backend = struct {
         // the modern callback packing.
         var version = self.iconData(0);
         version.uVersion = win32.NOTIFYICON_VERSION_4;
-        _ = win32.Shell_NotifyIconW(win32.NIM_SETVERSION, &version);
+        if (!win32.Shell_NotifyIconW(win32.NIM_SETVERSION, &version).toBool()) {
+            self.owner.last_diagnostic = "the shell refused version 4 tray callbacks";
+            return error.PlatformFailure;
+        }
     }
 
     fn refreshIcon(self: *Backend) Error!void {
@@ -332,23 +339,36 @@ pub const Backend = struct {
         const options = self.owner.options;
         const wanted = win32.smallIconSize();
 
-        image.freeAll(self.gpa, self.icon_frames);
-        self.icon_frames = &.{};
-        image.freeAll(self.gpa, self.attention_frames);
-        self.attention_frames = &.{};
-
-        self.icon_frames = try self.decode(options.icon);
-        self.attention_frames = try self.decode(options.attention_icon);
-        self.built_for = wanted;
+        const frames = try self.decode(options.icon);
+        errdefer image.freeAll(self.gpa, frames);
+        const attention_frames = try self.decode(options.attention_icon);
+        const icon = build(frames, options.icon, wanted);
+        const attention_icon = build(attention_frames, options.attention_icon, wanted);
 
         if (self.icon) |handle| _ = win32.DestroyIcon(handle);
         if (self.attention_icon) |handle| _ = win32.DestroyIcon(handle);
-        self.icon = build(self.icon_frames, options.icon, wanted);
-        self.attention_icon = build(self.attention_frames, options.attention_icon, wanted);
+        image.freeAll(self.gpa, self.icon_frames);
+        image.freeAll(self.gpa, self.attention_frames);
+        self.icon_frames = frames;
+        self.attention_frames = attention_frames;
+        self.icon = icon;
+        self.attention_icon = attention_icon;
+        self.built_for = wanted;
     }
 
     fn decode(self: *Backend, icon: ?Icon) Error![]image.Image {
         const source = icon orelse return &.{};
+        if (source == .path) {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(self.owner.io, source.path, self.gpa, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("perch: cannot read a tray icon: {t}", .{err});
+                    return &.{};
+                },
+            };
+            defer self.gpa.free(bytes);
+            return self.decode(.{ .bytes = bytes });
+        }
         return icon_mod.decodeAll(self.gpa, source) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => blk: {
@@ -371,10 +391,13 @@ pub const Backend = struct {
                 var buffer: [256]u16 = undefined;
                 win32.copyWide(&buffer, name);
                 const instance: ?win32.HINSTANCE = win32.GetModuleHandleW(null);
-                if (win32.LoadIconW(instance, @ptrCast(&buffer))) |handle| return handle;
+                if (win32.LoadImageW(instance, @ptrCast(&buffer), win32.IMAGE_ICON, @intCast(wanted), @intCast(wanted), 0)) |handle| return @ptrCast(handle);
             }
         }
-        return win32.LoadIconW(null, win32.IDI_APPLICATION);
+        // LoadIconW returns a shared handle, which must not be destroyed. Use
+        // LoadImageW without LR_SHARED so every stored handle is owned.
+        const handle = win32.LoadImageW(null, win32.IDI_APPLICATION, win32.IMAGE_ICON, @intCast(wanted), @intCast(wanted), 0) orelse return null;
+        return @ptrCast(handle);
     }
 
     // -- menus ---------------------------------------------------------------
@@ -430,7 +453,7 @@ pub const Backend = struct {
         if (item.kind == .separator) {
             info.fMask = win32.MIIM_FTYPE;
             info.fType = win32.MFT_SEPARATOR;
-            _ = win32.InsertMenuItemW(handle, position, win32.BOOL.TRUE, &info);
+            if (!win32.InsertMenuItemW(handle, position, win32.BOOL.TRUE, &info).toBool()) return error.PlatformFailure;
             return;
         }
 
@@ -462,15 +485,17 @@ pub const Backend = struct {
                 if (item.checked) info.fState |= win32.MFS_CHECKED;
             },
             .submenu => if (item.submenu) |sub| {
-                if (self.buildMenu(sub)) |child| {
-                    info.fMask |= win32.MIIM_SUBMENU;
-                    info.hSubMenu = child;
-                }
+                const child = self.buildMenu(sub) orelse return error.PlatformFailure;
+                info.fMask |= win32.MIIM_SUBMENU;
+                info.hSubMenu = child;
             },
             else => {},
         }
 
-        _ = win32.InsertMenuItemW(handle, position, win32.BOOL.TRUE, &info);
+        if (!win32.InsertMenuItemW(handle, position, win32.BOOL.TRUE, &info).toBool()) {
+            if (info.hSubMenu) |child| _ = win32.DestroyMenu(child);
+            return error.PlatformFailure;
+        }
     }
 
     // -- messages -------------------------------------------------------------
@@ -555,8 +580,8 @@ fn windowProc(
         },
         win32.WM_PERCH_STOP => {
             self.stopping = true;
-            // Ends the GetMessage loop even while it is blocked.
-            _ = win32.PostMessageW(window, win32.WM_QUIT, 0, 0);
+            // This message already wakes GetMessage. Posting WM_QUIT here would
+            // poison the thread's queue for other trays or an enclosing loop.
             return 0;
         },
         win32.WM_DESTROY, win32.WM_CLOSE => {
@@ -571,4 +596,51 @@ fn windowProc(
             return win32.DefWindowProcW(window, message, wparam, lparam);
         },
     }
+}
+
+test "native menus preserve labels, submenus and checkbox/radio/disabled state" {
+    const gpa = std.testing.allocator;
+    var menu = Menu.init(gpa);
+    defer menu.deinit();
+    const checkbox = try menu.addCheckbox("启用😀", true);
+    const radio = try menu.addRadio("Radio", 1, true);
+    _ = try menu.add(.{ .label = "Disabled", .enabled = false });
+    try menu.addSeparator();
+    const sub = try menu.addSubmenu("Submenu");
+    const child_id = try sub.add(.{ .label = "Quit", .accelerator = "Ctrl+Q" });
+    var self: Backend = .{
+        .owner = undefined,
+        .gpa = gpa,
+        .window = undefined,
+        .taskbar_created = 0,
+    };
+    const handle = self.buildMenu(&menu) orelse return error.PlatformFailure;
+    defer _ = win32.DestroyMenu(handle);
+    try std.testing.expectEqual(@as(i32, 5), win32.GetMenuItemCount(handle));
+
+    var label: [64:0]u16 = @splat(0);
+    var info: win32.MENUITEMINFOW = std.mem.zeroes(win32.MENUITEMINFOW);
+    info.cbSize = @sizeOf(win32.MENUITEMINFOW);
+    info.fMask = win32.MIIM_STRING | win32.MIIM_ID | win32.MIIM_STATE | win32.MIIM_FTYPE | win32.MIIM_SUBMENU;
+    info.dwTypeData = &label;
+    info.cch = label.len;
+    try std.testing.expect(win32.GetMenuItemInfoW(handle, 0, win32.BOOL.TRUE, &info).toBool());
+    try std.testing.expectEqual(checkbox, info.wID);
+    try std.testing.expect(info.fState & win32.MFS_CHECKED != 0);
+    try std.testing.expectEqualSlices(u16, std.unicode.utf8ToUtf16LeStringLiteral("启用😀"), label[0..info.cch]);
+    try std.testing.expect(win32.GetMenuItemInfoW(handle, 1, win32.BOOL.TRUE, &info).toBool());
+    try std.testing.expectEqual(radio, info.wID);
+    try std.testing.expect(info.fType & win32.MFT_RADIOCHECK != 0);
+    try std.testing.expect(info.fState & win32.MFS_CHECKED != 0);
+    try std.testing.expect(win32.GetMenuItemInfoW(handle, 2, win32.BOOL.TRUE, &info).toBool());
+    try std.testing.expect(info.fState & win32.MFS_GRAYED != 0);
+    try std.testing.expect(win32.GetMenuItemInfoW(handle, 3, win32.BOOL.TRUE, &info).toBool());
+    try std.testing.expect(info.fType & win32.MFT_SEPARATOR != 0);
+    try std.testing.expect(win32.GetMenuItemInfoW(handle, 4, win32.BOOL.TRUE, &info).toBool());
+    const child = info.hSubMenu orelse return error.PlatformFailure;
+    info.dwTypeData = &label;
+    info.cch = label.len;
+    try std.testing.expect(win32.GetMenuItemInfoW(child, 0, win32.BOOL.TRUE, &info).toBool());
+    try std.testing.expectEqual(child_id, info.wID);
+    try std.testing.expectEqualSlices(u16, std.unicode.utf8ToUtf16LeStringLiteral("Quit\tCtrl+Q"), label[0..info.cch]);
 }

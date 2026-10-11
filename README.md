@@ -6,15 +6,15 @@ no GTK, no Qt, no Electron.
 | Platform | Backend | Status |
 | --- | --- | --- |
 | Linux | `StatusNotifierItem` over DBus | **working**, verified on Plasma |
-| Windows | `Shell_NotifyIcon` + message-only window | **written, not yet run** |
+| Windows | `Shell_NotifyIcon` + hidden top-level window | **working**, native smoke verified on Windows 11 x64 |
 | macOS | `NSStatusItem` via the Objective-C runtime | **working**, tray and notification interactions verified on M4 |
 | BSD | same protocol, but the code uses Linux syscalls | not yet |
 
-> **Status: alpha on Linux and macOS, unverified on Windows.** Linux is verified
+> **Status: alpha on Linux, Windows and macOS.** Linux is verified
 > against Plasma. macOS has a pure Zig AppKit backend, with tray interactions,
 > notification delivery, action callbacks and tagged replacement/close verified
-> on an M4 Mac. Windows cross-compiles and links but has not run on Windows — see
-> [issue #1](https://github.com/jinzhongjia/perch/issues/1).
+> on an M4 Mac. Windows has native automated smoke coverage on Windows 11 x64;
+> visual appearance and physical mouse interaction still need manual validation.
 > See [the roadmap](docs/ROADMAP.md).
 
 ## Install
@@ -29,7 +29,7 @@ const perch = b.dependency("perch", .{ .target = target, .optimize = optimize })
 exe.root_module.addImport("perch", perch.module("perch"));
 ```
 
-Requires Zig 0.16.
+Requires Zig 0.17.0.
 
 ## Use
 
@@ -92,7 +92,7 @@ if no watcher is running, perch waits for `NameOwnerChanged` and registers then,
 which also covers a shell restart.
 
 **`Options.linux.environ` is required.** perch needs
-`DBUS_SESSION_BUS_ADDRESS`, and Zig 0.16 gives library code no way to read the
+`DBUS_SESSION_BUS_ADDRESS`, and Zig 0.17 gives library code no way to read the
 environment on its own — so pass `init.minimal.environ` from `main`, or set
 `Options.linux.bus_address` yourself.
 
@@ -111,13 +111,40 @@ AppIndicator extension. `zig build run` reports which of these is the case.
 
 ## Windows
 
-A message-only window owns one `NOTIFYICONDATAW` entry and receives the shell's
+A hidden top-level window owns one `NOTIFYICONDATAW` entry and receives the shell's
 callbacks. `NOTIFYICON_VERSION_4` is requested, so the pointer position comes
 with each event. The menu is an `HMENU` built fresh from `perch.Menu` on every
 popup, shown with `TrackPopupMenuEx`. Icons are decoded, then converted to an
 `HICON` at the size `SM_CXSMICON` reports for the current DPI. `TaskbarCreated`
 is handled, so the icon survives an Explorer restart and picks up a DPI change
 with it.
+
+The owner stays hidden, without a taskbar button. It must be a top-level window:
+message-only windows do not receive the shell's `TaskbarCreated` broadcast.
+Create, update, run, pump and destroy on the creating thread; only `stop` is
+safe to call from another thread. Stopping one tray does not post a thread-wide
+`WM_QUIT`, so other trays and enclosing event loops continue running.
+
+Native verification on Windows 11 x64 (build 26300) with Zig 0.17.0 covers shell
+registration and removal, raw and PNG/path icons, Unicode and long tooltips,
+status and attention updates, native submenu/checkbox/radio/disabled menu
+construction, injected version-4 click coordinates and balloon callbacks,
+multiple trays, `run`/`pump`, off-thread stop, and allocation-failure cleanup.
+Recovery is tested by removing the test icon and injecting `TaskbarCreated`;
+Explorer is not restarted. Banner visibility, physical clicks, popup selection,
+real shell restarts and mixed-DPI displays still need manual testing. Windows
+ARM64 is compile/link checked, but has not been run on ARM64 hardware.
+
+```sh
+zig build test
+zig build windows-smoke  # requires a running Explorer desktop session
+zig build examples
+zig build check-windows # x64 and ARM64, compile and link only
+zig build check-linux   # x64 and ARM64, compile and link only
+```
+
+`zig build check` also links both macOS targets and therefore requires an Apple
+SDK (on another host, pass `-Dmacos-sdk=<path>`).
 
 What the platform does not offer, and perch therefore does not pretend to:
 
@@ -316,7 +343,7 @@ zig build macos-app   # macOS: build zig-out/Perch.app for notification use
 dbus-run-session -- zig build integration   # mock-host tests
 ```
 
-`zig build check` compiles and links all five targets. On macOS the build
+`zig build check` compiles and links all six targets. On macOS the build
 discovers the selected SDK with `xcrun`; elsewhere supply an Apple SDK with
 `-Dmacos-sdk=/path/to/MacOSX.sdk`. CI runs the cross-link job on macOS so the
 framework declarations are checked against Apple's SDK, not just compiled.

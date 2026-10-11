@@ -31,19 +31,19 @@ pub fn sel(name: [:0]const u8) Sel {
 }
 
 pub fn send(comptime R: type, receiver: Id, comptime name: [:0]const u8, args: anytype) R {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+    const field_types = @typeInfo(@TypeOf(args)).@"struct".field_types;
     const Fn = comptime blk: {
-        var params: [fields.len + 2]type = undefined;
+        var params: [field_types.len + 2]type = undefined;
         params[0] = Id;
         params[1] = Sel;
-        for (fields, 2..) |field, i| {
-            switch (@typeInfo(field.type)) {
+        for (field_types, 2..) |field_type, i| {
+            switch (@typeInfo(field_type)) {
                 .comptime_int, .comptime_float, .null => @compileError("objc arguments need explicit ABI types"),
                 else => {},
             }
-            params[i] = field.type;
+            params[i] = field_type;
         }
-        break :blk @Fn(&params, &@as([params.len]std.builtin.Type.Fn.Param.Attributes, @splat(.{})), R, .{ .@"callconv" = .c });
+        break :blk @Fn(&params, &@as([params.len]std.lang.Type.Fn.ParamAttributes, @splat(.{})), R, .{ .@"callconv" = .c });
     };
     // x86_64 returns NSRect through an indirect result pointer. arm64 has one
     // message entry point; its normal C ABI supplies the indirect result in x8.

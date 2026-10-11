@@ -61,7 +61,7 @@ const Command = enum {
 };
 
 const App = struct {
-    ids: [std.meta.fields(Command).len]perch.MenuItem.Id = @splat(0),
+    ids: [@typeInfo(Command).@"enum".field_names.len]perch.MenuItem.Id = @splat(0),
     probe: *perch.Tray = undefined,
     menu: *perch.Menu,
     png: []const u8,
@@ -78,13 +78,13 @@ const App = struct {
     race_tag: perch.Notification.Tag = 100,
 
     fn add(self: *App, menu: *perch.Menu, command: Command, label: []const u8) !void {
-        self.ids[@intFromEnum(command)] = try menu.addItem(label);
+        self.ids[@backingInt(command)] = try menu.addItem(label);
     }
 
     fn onControl(ctx: ?*anyopaque, _: *perch.Tray, id: perch.MenuItem.Id) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
         const index = std.mem.indexOfScalar(perch.MenuItem.Id, &self.ids, id) orelse return;
-        const command: Command = @enumFromInt(index);
+        const command: Command = @fromBackingInt(@intCast(index));
         std.log.info("request: {t}", .{command});
         self.execute(command) catch |err| std.log.err("{t}: {t}", .{ command, err });
     }

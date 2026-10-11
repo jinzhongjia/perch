@@ -118,7 +118,7 @@ fn readInfo(dib: []const u8) Error!Info {
         else => return error.Unsupported,
     }
 
-    const compression: Compression = @enumFromInt(std.mem.readInt(u32, dib[16..20], .little));
+    const compression: Compression = @fromBackingInt(@intCast(std.mem.readInt(u32, dib[16..20], .little)));
     switch (compression) {
         .rgb, .bitfields => {},
         else => return error.Unsupported,

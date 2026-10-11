@@ -9,7 +9,7 @@ const Notification = @import("notification.zig").Notification;
 /// Linux and BSD knobs, ignored elsewhere.
 pub const LinuxOptions = struct {
     /// The process environment, needed to find `DBUS_SESSION_BUS_ADDRESS`. Zig
-    /// 0.16 gives library code no other way to read the environment, so pass
+    /// 0.17 gives library code no other way to read the environment, so pass
     /// `init.minimal.environ` from `main`.
     environ: std.process.Environ = .empty,
     /// Session bus address, overriding whatever `environ` says.
