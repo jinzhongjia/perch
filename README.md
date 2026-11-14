@@ -61,6 +61,9 @@ defer tray.destroy();
 try tray.run(); // blocks; call tray.stop() to return
 ```
 
+A callback may call `tray.destroy()` itself: `run`/`pump` then return and the
+tray is freed on the way out, so do not destroy it again afterwards.
+
 `Tray.pump()` is available when perch has to share a thread with another event
 loop instead of owning it.
 
@@ -75,7 +78,9 @@ loop instead of owning it.
   keep them alive while the menu is attached. `@embedFile` and string literals
   are the intended case.
 - **Ids, not pointers, in callbacks.** `MenuItem.Id` stays stable across menu
-  rebuilds, which is what platforms like Windows want anyway.
+  rebuilds, which is what platforms like Windows want anyway. Explicit ids must
+  be unique across the tree and at most `MenuItem.max_id` (`maxInt(i32)`);
+  radio groups also span the whole tree.
 - **Checkbox and radio state lives in the `Menu`.** Backends only render it, so
   behaviour is identical on all three platforms and unit-testable without a
   desktop session.
@@ -388,7 +393,7 @@ when the probe is passive or has no menu. Choose **Quit both trays** to exit.
 | Menus and activation | Disable/enable and rename the sample, append numbered items, inspect menu icons and nested checkboxes. Detached menus should disappear; reattachment should restore them. Recreate the probe to compare left-click policies, with and without a menu. |
 | Request probe showMenu | Check whether the host opens the probe menu; GNOME AppIndicator v64 does not handle this request. |
 | Post / replace with next visible revision | Wait for delivery between clicks. The same notification should update its body rather than accumulate. Close it and check the `reason=closed` callback. |
-| Notification race cases | Three immediate posts with one fresh tag should leave only the final revision. Posting then immediately closing a fresh tag should leave no persistent notification. These probes currently expose Linux backend timing bugs; they are not passing assertions. |
+| Notification race cases | Three immediate posts with one fresh tag should leave only the final revision. Posting then immediately closing a fresh tag should leave no persistent notification. Superseded posts may flash briefly before they are withdrawn. |
 | Image and markup hints | Inspect bold/italic text and the image. Rendering of hints is host-dependent. |
 
 Click, double-click, middle-click and scroll on the probe while watching its

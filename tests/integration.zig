@@ -578,4 +578,37 @@ fn scenarioNotifications(fixture: Fixture) !void {
         "a closed tag starts a new notification, got {d}",
         .{fixture.host.notifications.items.len},
     );
+
+    std.debug.print("notifications posted faster than the daemon answers\n", .{});
+
+    // Three posts before any reply: only the last revision may stay open.
+    const burst_start = fixture.host.notifications.items.len;
+    try fixture.tray.notify(.{ .title = "Burst 1", .tag = 9 });
+    try fixture.tray.notify(.{ .title = "Burst 2", .tag = 9 });
+    try fixture.tray.notify(.{ .title = "Burst 3", .tag = 9 });
+    try fixture.settle();
+    var open_burst: usize = 0;
+    var last_open: ?[]const u8 = null;
+    for (fixture.host.notifications.items[burst_start..]) |item| {
+        if (item.closed) continue;
+        open_burst += 1;
+        last_open = item.summary;
+    }
+    check(open_burst == 1, "a burst on one tag leaves one notification, got {d}", .{open_burst});
+    check(
+        last_open != null and std.mem.eql(u8, last_open.?, "Burst 3"),
+        "the surviving notification is the final revision, got {?s}",
+        .{last_open},
+    );
+
+    // Closing before the daemon answered must still withdraw it.
+    const early_start = fixture.host.notifications.items.len;
+    try fixture.tray.notify(.{ .title = "Gone", .tag = 11 });
+    try fixture.tray.closeNotification(11);
+    try fixture.settle();
+    var open_early: usize = 0;
+    for (fixture.host.notifications.items[early_start..]) |item| {
+        if (!item.closed) open_early += 1;
+    }
+    check(open_early == 0, "closing before the reply leaves nothing open, got {d}", .{open_early});
 }
