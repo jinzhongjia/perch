@@ -3,8 +3,12 @@ const Icon = @import("icon.zig").Icon;
 
 pub const MenuItem = struct {
     /// Stable identifier handed back to `Handler.on_activate`. Ids are unique
-    /// within the whole menu tree, submenus included.
+    /// within the whole menu tree, submenus included, and never exceed
+    /// `max_id`.
     pub const Id = u32;
+    /// dbusmenu ids are `INT32` and Windows command ids come back through a
+    /// signed `BOOL`, so ids stay in the positive `i32` range everywhere.
+    pub const max_id: Id = std.math.maxInt(i32);
 
     pub const Kind = enum { normal, checkbox, radio, separator, submenu };
 
@@ -19,7 +23,7 @@ pub const MenuItem = struct {
     enabled: bool = true,
     /// Only read for `.checkbox` and `.radio`.
     checked: bool = false,
-    /// Radio items sharing a group toggle as a set.
+    /// Radio items sharing a group toggle as a set, across the whole tree.
     radio_group: u16 = 0,
     /// Owned by the parent `Menu`; only set for `.submenu`.
     submenu: ?*Menu = null,
@@ -31,6 +35,13 @@ pub const MenuItem = struct {
 /// Submenus hold a pointer back to their parent, so the root must not be moved
 /// or copied once `addSubmenu` has been called on it.
 pub const Menu = struct {
+    pub const Error = error{
+        /// An explicit id is already taken somewhere in the tree.
+        DuplicateId,
+        /// An explicit id is above `MenuItem.max_id`, or generated ids ran out.
+        IdOutOfRange,
+    } || std.mem.Allocator.Error;
+
     gpa: std.mem.Allocator,
     items: std.ArrayList(MenuItem) = .empty,
     /// Submenus allocated by `addSubmenu`, freed by `deinit`.
@@ -60,45 +71,57 @@ pub const Menu = struct {
         self.* = undefined;
     }
 
-    fn takeId(self: *Menu, requested: MenuItem.Id) MenuItem.Id {
+    /// Validates `requested`, or picks the next free id when it is 0. Does not
+    /// commit: `commitId` does, once the item is actually stored.
+    fn chooseId(self: *Menu, requested: MenuItem.Id) Error!MenuItem.Id {
         const owner = self.root();
-        if (requested != 0) {
-            if (requested >= owner.next_id) owner.next_id = requested + 1;
-            return requested;
+        if (requested == 0) {
+            // Skip ids an explicit item already claimed.
+            var id = owner.next_id;
+            while (owner.find(id) != null) id += 1;
+            if (id > MenuItem.max_id) return error.IdOutOfRange;
+            return id;
         }
-        defer owner.next_id += 1;
-        return owner.next_id;
+        if (requested > MenuItem.max_id) return error.IdOutOfRange;
+        if (owner.find(requested) != null) return error.DuplicateId;
+        return requested;
+    }
+
+    fn commitId(self: *Menu, id: MenuItem.Id) void {
+        const owner = self.root();
+        if (id >= owner.next_id) owner.next_id = id + 1;
     }
 
     /// Appends `item`, assigning an id when `item.id` is left at 0. Separators
     /// get ids too: platforms address every row, and id 0 is reserved for the
     /// menu itself on Linux.
-    pub fn add(self: *Menu, item: MenuItem) !MenuItem.Id {
+    pub fn add(self: *Menu, item: MenuItem) Error!MenuItem.Id {
         var copy = item;
-        copy.id = self.takeId(item.id);
+        copy.id = try self.chooseId(item.id);
         try self.items.append(self.gpa, copy);
+        self.commitId(copy.id);
         return copy.id;
     }
 
-    pub fn addItem(self: *Menu, label: []const u8) !MenuItem.Id {
+    pub fn addItem(self: *Menu, label: []const u8) Error!MenuItem.Id {
         return self.add(.{ .label = label });
     }
 
-    pub fn addSeparator(self: *Menu) !void {
+    pub fn addSeparator(self: *Menu) Error!void {
         _ = try self.add(.{ .kind = .separator });
     }
 
-    pub fn addCheckbox(self: *Menu, label: []const u8, checked: bool) !MenuItem.Id {
+    pub fn addCheckbox(self: *Menu, label: []const u8, checked: bool) Error!MenuItem.Id {
         return self.add(.{ .kind = .checkbox, .label = label, .checked = checked });
     }
 
-    pub fn addRadio(self: *Menu, label: []const u8, group: u16, checked: bool) !MenuItem.Id {
+    pub fn addRadio(self: *Menu, label: []const u8, group: u16, checked: bool) Error!MenuItem.Id {
         return self.add(.{ .kind = .radio, .label = label, .radio_group = group, .checked = checked });
     }
 
     /// Appends a submenu and returns it for further population. The returned
     /// pointer stays valid until this menu is deinitialised.
-    pub fn addSubmenu(self: *Menu, label: []const u8) !*Menu {
+    pub fn addSubmenu(self: *Menu, label: []const u8) Error!*Menu {
         const child = try self.gpa.create(Menu);
         errdefer self.gpa.destroy(child);
         child.* = .{ .gpa = self.gpa, .parent = self };
@@ -134,11 +157,13 @@ pub const Menu = struct {
         return true;
     }
 
-    /// Checks `id`, clearing siblings that share its radio group.
+    /// Checks `id`, clearing every other radio in its group. Groups span the
+    /// whole tree, so this behaves the same whether called on the root or on
+    /// the submenu holding `id`.
     pub fn setChecked(self: *Menu, id: MenuItem.Id, checked: bool) bool {
         const item = self.find(id) orelse return false;
         item.checked = checked;
-        if (checked and item.kind == .radio) self.clearGroup(item.radio_group, id);
+        if (checked and item.kind == .radio) self.root().clearGroup(item.radio_group, id);
         return true;
     }
 
@@ -178,6 +203,34 @@ test "explicit ids do not collide with generated ones" {
     _ = try menu.add(.{ .label = "Pinned", .id = 100 });
     const generated = try menu.addItem("Other");
     try std.testing.expectEqual(@as(MenuItem.Id, 101), generated);
+}
+
+test "explicit ids are validated against the whole tree" {
+    var menu = Menu.init(std.testing.allocator);
+    defer menu.deinit();
+
+    const first = try menu.addItem("First");
+    const sub = try menu.addSubmenu("Sub");
+    try std.testing.expectError(error.DuplicateId, sub.add(.{ .label = "Clash", .id = first }));
+    try std.testing.expectError(error.IdOutOfRange, menu.add(.{ .label = "Huge", .id = MenuItem.max_id + 1 }));
+    _ = try menu.add(.{ .label = "Last", .id = MenuItem.max_id });
+    try std.testing.expectError(error.IdOutOfRange, menu.addItem("Overflow"));
+    // A failed add leaves nothing behind.
+    try std.testing.expectEqual(@as(usize, 0), sub.items.items.len);
+}
+
+test "radio groups span the tree from any entry point" {
+    var menu = Menu.init(std.testing.allocator);
+    defer menu.deinit();
+
+    const top = try menu.addRadio("Top", 1, true);
+    const sub = try menu.addSubmenu("Sub");
+    const nested = try sub.addRadio("Nested", 1, false);
+
+    try std.testing.expect(sub.setChecked(nested, true));
+    try std.testing.expect(!menu.find(top).?.checked);
+    try std.testing.expect(menu.setChecked(top, true));
+    try std.testing.expect(!menu.find(nested).?.checked);
 }
 
 test "radio selection clears its group only" {

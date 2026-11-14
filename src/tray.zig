@@ -184,6 +184,10 @@ pub const Tray = struct {
     handler: Handler,
     /// Last platform-specific error text, valid until the next failing call.
     last_diagnostic: ?[]const u8 = null,
+    /// How many perch entry points (`run`, `pump`, `showMenu`, a window
+    /// procedure) are on the stack. While nonzero, `destroy` is deferred.
+    busy: u32 = 0,
+    destroy_pending: bool = false,
     impl: backend.Impl,
 
     pub fn create(gpa: std.mem.Allocator, options: Options) Error!*Tray {
@@ -202,10 +206,40 @@ pub const Tray = struct {
         return self;
     }
 
+    /// Frees the tray. Calling this from a callback is allowed: the backend is
+    /// still unwinding, so the tray is stopped now and freed once control
+    /// leaves perch (`run`/`pump` return). Do not destroy it a second time.
     pub fn destroy(self: *Tray) void {
+        if (self.busy > 0) {
+            self.destroy_pending = true;
+            self.impl.stop();
+            return;
+        }
+        self.finalize();
+    }
+
+    fn finalize(self: *Tray) void {
+        // Teardown may re-enter a window procedure; it must not finalize again.
+        self.destroy_pending = false;
         self.impl.deinit();
         const gpa = self.gpa;
         gpa.destroy(self);
+    }
+
+    /// For backends: marks perch code as running on this tray's stack.
+    pub fn enter(self: *Tray) void {
+        self.busy += 1;
+    }
+
+    /// Pairs with `enter`. Returns false when a deferred `destroy` freed the
+    /// tray, which must then not be touched again.
+    pub fn leave(self: *Tray) bool {
+        self.busy -= 1;
+        if (self.busy == 0 and self.destroy_pending) {
+            self.finalize();
+            return false;
+        }
+        return true;
     }
 
     pub fn setIcon(self: *Tray, icon: Icon) Error!void {
@@ -263,18 +297,27 @@ pub const Tray = struct {
 
     /// Pops the menu up at the pointer, as if the icon had been clicked.
     pub fn showMenu(self: *Tray) Error!void {
-        return self.impl.showMenu();
+        self.enter();
+        const result = self.impl.showMenu();
+        _ = self.leave();
+        return result;
     }
 
     /// Runs the platform event loop until `stop` is called. Blocking.
     pub fn run(self: *Tray) Error!void {
-        return self.impl.run();
+        self.enter();
+        const result = self.impl.run();
+        _ = self.leave();
+        return result;
     }
 
     /// Processes pending events and returns immediately. Use this when perch
     /// has to share a thread with another event loop.
     pub fn pump(self: *Tray) Error!void {
-        return self.impl.pump();
+        self.enter();
+        const result = self.impl.pump();
+        _ = self.leave();
+        return result;
     }
 
     /// Asks `run` to return. Safe to call from any thread.

@@ -585,6 +585,10 @@ fn windowProc(
 
     const tray: *Tray = @ptrFromInt(@as(usize, @bitCast(raw)));
     const self = &tray.impl;
+    // A host loop can dispatch straight here; a callback that destroys the
+    // tray must not free it under the code below.
+    tray.enter();
+    defer _ = tray.leave();
 
     switch (message) {
         win32.WM_PERCH_ICON => {

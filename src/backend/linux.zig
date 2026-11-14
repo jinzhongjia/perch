@@ -72,6 +72,10 @@ pub const Backend = struct {
 
     /// Notifications we have posted, so tags can be mapped to server ids.
     notifications: std.ArrayList(Posted) = .empty,
+    /// Serials of `Notify` calls whose notification is no longer wanted — closed
+    /// or superseded before the daemon answered. Whatever id they come back
+    /// with is closed on arrival.
+    orphans: std.ArrayList(u32) = .empty,
 
     /// Scratch for marshalling reply bodies; reused.
     body: wire.Writer,
@@ -90,13 +94,15 @@ pub const Backend = struct {
         }
     };
 
-    /// A notification in flight. `id` stays null until the daemon answers, which
-    /// is why callers address notifications by their own `tag`.
+    /// A tagged notification. `id` stays null until the daemon first answers,
+    /// which is why callers address notifications by their own `tag`.
     const Posted = struct {
         tag: Notification.Tag,
-        /// Serial of the `Notify` call, for matching the reply.
+        /// Serial of the latest `Notify` call, for matching the reply.
         serial: u32,
         id: ?u32 = null,
+        /// Whether the reply to `serial` is still outstanding.
+        awaiting: bool = true,
     };
 
     pub fn init(owner: *Tray) Error!Backend {
@@ -203,6 +209,7 @@ pub const Backend = struct {
         self.overlay.deinit(self.gpa);
         if (self.icon_export) |*exporter| exporter.deinit();
         self.notifications.deinit(self.gpa);
+        self.orphans.deinit(self.gpa);
         self.body.deinit();
         self.conn.destroy();
         self.gpa.free(self.service_name);
@@ -328,8 +335,7 @@ pub const Backend = struct {
         if (notification.image) |picture| try self.writeImageHint(b, picture);
         b.arrayEnd(hints);
 
-        const timeout: i32 = if (notification.timeout_ms) |ms| @intCast(ms) else -1;
-        try b.int(i32, timeout);
+        try b.int(i32, notification.freedesktopTimeout());
 
         const serial = self.conn.call(.{
             .destination = notifications_name,
@@ -343,8 +349,11 @@ pub const Backend = struct {
         // Remember the call so the reply can attach the daemon's id to our tag.
         if (notification.tag) |tag| {
             if (self.findPosted(tag)) |existing| {
+                // Without an id we could not replace the first post, so this
+                // call created a second notification: retire the first.
+                if (existing.id == null) try self.orphans.append(self.gpa, existing.serial);
                 existing.serial = serial;
-                existing.id = null;
+                existing.awaiting = true;
             } else {
                 try self.notifications.append(self.gpa, .{ .tag = tag, .serial = serial });
             }
@@ -353,13 +362,19 @@ pub const Backend = struct {
 
     pub fn closeNotification(self: *Backend, tag: Notification.Tag) Error!void {
         const posted = self.findPosted(tag) orelse return;
-        // Nothing to close yet if the daemon has not answered; dropping the
-        // record keeps the tag reusable.
-        const id = posted.id orelse {
+        const id = posted.id;
+        if (posted.awaiting) {
+            // The pending reply may name a notification we have not seen yet, or
+            // a fresh id if the daemon declined to replace; close that one on
+            // arrival. Dropping the record keeps the tag reusable straight away.
+            try self.orphans.append(self.gpa, posted.serial);
             self.forgetPosted(tag);
-            return;
-        };
+        }
+        // Otherwise the record stays until NotificationClosed reports reason 3.
+        if (id) |known| try self.sendCloseNotification(known);
+    }
 
+    fn sendCloseNotification(self: *Backend, id: u32) Error!void {
         self.body.clearRetainingCapacity();
         try self.body.int(u32, id);
         _ = self.conn.call(.{
@@ -371,6 +386,13 @@ pub const Backend = struct {
             .body = self.body.bytes(),
             .no_reply = true,
         }) catch |err| return mapSendError(err);
+    }
+
+    /// Removes `serial` from `orphans`, returning whether it was there.
+    fn takeOrphan(self: *Backend, serial: u32) bool {
+        const index = std.mem.indexOfScalar(u32, self.orphans.items, serial) orelse return false;
+        _ = self.orphans.swapRemove(index);
+        return true;
     }
 
     /// The `image-data` hint: `(iiibiiay)` — width, height, rowstride, alpha,
@@ -540,6 +562,7 @@ pub const Backend = struct {
                 // A call of ours was rejected. Nothing to retry, but staying
                 // quiet here makes marshalling bugs invisible.
                 log.warn("perch: the bus rejected a call: {?s}", .{message.error_name});
+                self.dropFailedNotify(message);
                 return;
             },
             // Replies to calls whose results we do not need.
@@ -557,13 +580,40 @@ pub const Backend = struct {
         try self.conn.replyError(message, "org.freedesktop.DBus.Error.UnknownObject", "no such object");
     }
 
-    /// Attaches the daemon's notification id to the tag that asked for it.
+    /// Attaches the daemon's notification id to the tag that asked for it, or
+    /// closes it straight away if it was orphaned in the meantime.
     fn adoptNotificationId(self: *Backend, message: Message) void {
         const reply_serial = message.reply_serial orelse return;
+        var r: wire.Reader = .init(message.body, message.endian);
+
+        if (self.takeOrphan(reply_serial)) {
+            const id = r.int(u32) catch return;
+            // A replacement keeps the id of a live tag; do not close that one.
+            for (self.notifications.items) |posted| {
+                if (posted.id == id) return;
+            }
+            self.sendCloseNotification(id) catch |err| {
+                log.warn("perch: cannot close an orphaned notification: {t}", .{err});
+            };
+            return;
+        }
         for (self.notifications.items) |*posted| {
             if (posted.serial != reply_serial) continue;
-            var r: wire.Reader = .init(message.body, message.endian);
             posted.id = r.int(u32) catch return;
+            posted.awaiting = false;
+            return;
+        }
+    }
+
+    /// A rejected `Notify` leaves nothing on screen to track.
+    fn dropFailedNotify(self: *Backend, message: Message) void {
+        const reply_serial = message.reply_serial orelse return;
+        if (self.takeOrphan(reply_serial)) return;
+        for (self.notifications.items) |*posted| {
+            if (posted.serial != reply_serial) continue;
+            posted.awaiting = false;
+            // A failed replacement leaves the previous revision showing.
+            if (posted.id == null) self.forgetPosted(posted.tag);
             return;
         }
     }
@@ -583,6 +633,12 @@ pub const Backend = struct {
         const code = r.int(u32) catch return error.Malformed;
 
         const posted = self.postedById(id) orelse return;
+        if (posted.awaiting) {
+            // A newer revision is in flight and may come back under a fresh id;
+            // keep the tag so it can still be replaced or closed.
+            posted.id = null;
+            return;
+        }
         const tag = posted.tag;
         self.forgetPosted(tag);
         self.owner.dispatchNotificationClosed(tag, .fromCode(code));
