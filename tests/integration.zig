@@ -205,6 +205,7 @@ pub fn main(init: std.process.Init) !u8 {
     try scenarioIncrementalHost(fixture);
     try scenarioClicks(fixture, ids);
     try scenarioNotifications(fixture);
+    try scenarioDestroyFromCallback(fixture, address);
 
     std.debug.print("\n{d} checks, {d} failed\n", .{ checks, failures });
     return if (failures == 0) 0 else 1;
@@ -611,4 +612,78 @@ fn scenarioNotifications(fixture: Fixture) !void {
         if (!item.closed) open_early += 1;
     }
     check(open_early == 0, "closing before the reply leaves nothing open, got {d}", .{open_early});
+
+    std.debug.print("notification timeouts\n", .{});
+    const timeouts = [_]struct { ms: ?u32, wire: i32 }{
+        .{ .ms = null, .wire = -1 },
+        .{ .ms = 5000, .wire = 5000 },
+        .{ .ms = std.math.maxInt(u32), .wire = std.math.maxInt(i32) },
+    };
+    for (timeouts) |case| {
+        try fixture.tray.notify(.{ .title = "Timeout", .timeout_ms = case.ms });
+        try fixture.settle();
+        const latest = fixture.host.latest();
+        check(
+            latest != null and latest.?.timeout == case.wire,
+            "timeout_ms {?d} arrives as {d}, got {?d}",
+            .{ case.ms, case.wire, if (latest) |l| l.timeout else null },
+        );
+    }
+}
+
+/// A callback that destroys its own tray. The backend is still unwinding the
+/// menu event when the callback returns, so the free must wait until `pump`
+/// does; freeing on the spot made the reply read released memory.
+fn scenarioDestroyFromCallback(fixture: Fixture, address: []const u8) !void {
+    std.debug.print("destroying a tray from its own callback\n", .{});
+    const gpa = fixture.seen.gpa;
+
+    const Doomed = struct {
+        tray: *perch.Tray = undefined,
+        destroyed: bool = false,
+
+        fn onActivate(ctx: ?*anyopaque, tray: *perch.Tray, id: perch.MenuItem.Id) void {
+            _ = id;
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.destroyed = true;
+            tray.destroy();
+        }
+
+        /// Pumps the doomed tray only while it is still alive.
+        fn step(self: *@This()) anyerror!void {
+            if (!self.destroyed) try self.tray.pump();
+        }
+    };
+
+    var menu = perch.Menu.init(gpa);
+    defer menu.deinit();
+    const quit = try menu.addItem("Quit");
+
+    var doomed: Doomed = .{};
+    doomed.tray = try perch.Tray.create(gpa, .{
+        .io = fixture.tray.options.io,
+        .app_id = "dev.perch.integration.doomed",
+        .menu = &menu,
+        .handler = .{ .ctx = &doomed, .on_activate = Doomed.onActivate },
+        .linux = .{ .bus_address = address },
+    });
+    defer if (!doomed.destroyed) doomed.tray.destroy();
+
+    const registered = fixture.host.items.items.len;
+    for (0..200) |_| {
+        if (fixture.host.items.items.len > registered) break;
+        try doomed.step();
+        try fixture.host.pump();
+        try fixture.tray.options.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    check(fixture.host.items.items.len > registered, "the second tray registered", .{});
+    if (fixture.host.items.items.len <= registered) return;
+
+    const service = fixture.host.items.items[registered].service;
+    const pending = try fixture.host.clickMenuItemOn(service, @intCast(quit));
+    _ = fixture.host.awaitReply(pending, &doomed, Doomed.step, 2000) catch |err| {
+        check(false, "the click on the doomed tray was answered, got {t}", .{err});
+        return;
+    };
+    check(doomed.destroyed, "the callback ran and destroyed its tray", .{});
 }

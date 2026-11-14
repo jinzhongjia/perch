@@ -335,11 +335,7 @@ pub const Backend = struct {
         if (notification.image) |picture| try self.writeImageHint(b, picture);
         b.arrayEnd(hints);
 
-        const timeout: i32 = if (notification.timeout_ms) |ms|
-            @intCast(@min(ms, std.math.maxInt(i32)))
-        else
-            -1;
-        try b.int(i32, timeout);
+        try b.int(i32, notification.freedesktopTimeout());
 
         const serial = self.conn.call(.{
             .destination = notifications_name,

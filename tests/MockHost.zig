@@ -40,6 +40,8 @@ pub const Posted = struct {
     actions: std.ArrayList([]u8) = .empty,
     /// The `value` hint, when present.
     progress: ?i32 = null,
+    /// The `expire_timeout` argument.
+    timeout: i32,
     replaces: u32,
     closed: bool = false,
 
@@ -207,7 +209,7 @@ fn handleNotify(self: *MockHost, message: Message) !void {
             try r.skip(sig);
         }
     }
-    _ = try r.int(i32); // timeout
+    const timeout = try r.int(i32);
 
     // Replacing keeps the id, which is how the caller's tag stays stable.
     const id = if (replaces != 0) replaces else id: {
@@ -224,6 +226,7 @@ fn handleNotify(self: *MockHost, message: Message) !void {
             .body = try self.gpa.dupe(u8, body_text),
             .actions = actions,
             .progress = progress,
+            .timeout = timeout,
             .replaces = replaces,
         };
     } else {
@@ -234,6 +237,7 @@ fn handleNotify(self: *MockHost, message: Message) !void {
             .body = try self.gpa.dupe(u8, body_text),
             .actions = actions,
             .progress = progress,
+            .timeout = timeout,
             .replaces = replaces,
         });
     }
@@ -370,13 +374,18 @@ pub fn aboutToShow(self: *MockHost, id: i32) !Pending {
 
 /// Clicks a menu row, as a host does when the user picks it.
 pub fn clickMenuItem(self: *MockHost, id: i32) !Pending {
+    return self.clickMenuItemOn(self.items.items[0].service, id);
+}
+
+/// `clickMenuItem` for an item other than the first registered one.
+pub fn clickMenuItemOn(self: *MockHost, service: []const u8, id: i32) !Pending {
     self.body.clearRetainingCapacity();
     try self.body.int(i32, id);
     try self.body.string("clicked");
     try self.body.variantString("");
     try self.body.int(u32, 0);
     return self.conn.call(.{
-        .destination = self.items.items[0].service,
+        .destination = service,
         .path = perch.linux.DBusMenu.object_path,
         .interface = perch.linux.DBusMenu.interface,
         .member = "Event",

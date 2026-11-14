@@ -120,6 +120,13 @@ pub const Notification = struct {
     sound_name: ?[]const u8 = null,
     /// Post without playing the host's sound.
     suppress_sound: bool = false,
+
+    /// `timeout_ms` as `org.freedesktop.Notifications.Notify` takes it: -1 for
+    /// the host default, and clamped to the positive `INT32` range.
+    pub fn freedesktopTimeout(self: Notification) i32 {
+        const ms = self.timeout_ms orelse return -1;
+        return @intCast(@min(ms, std.math.maxInt(i32)));
+    }
 };
 
 test "close reasons map from the wire codes" {
@@ -129,6 +136,16 @@ test "close reasons map from the wire codes" {
     try std.testing.expectEqual(R.closed, R.fromCode(3));
     try std.testing.expectEqual(R.unknown, R.fromCode(4));
     try std.testing.expectEqual(R.unknown, R.fromCode(0));
+}
+
+test "timeouts clamp to the freedesktop INT32 range" {
+    try std.testing.expectEqual(@as(i32, -1), (Notification{ .title = "" }).freedesktopTimeout());
+    try std.testing.expectEqual(@as(i32, 0), (Notification{ .title = "", .timeout_ms = 0 }).freedesktopTimeout());
+    try std.testing.expectEqual(@as(i32, 5000), (Notification{ .title = "", .timeout_ms = 5000 }).freedesktopTimeout());
+    const max = std.math.maxInt(i32);
+    try std.testing.expectEqual(@as(i32, max), (Notification{ .title = "", .timeout_ms = max }).freedesktopTimeout());
+    try std.testing.expectEqual(@as(i32, max), (Notification{ .title = "", .timeout_ms = max + 1 }).freedesktopTimeout());
+    try std.testing.expectEqual(@as(i32, max), (Notification{ .title = "", .timeout_ms = std.math.maxInt(u32) }).freedesktopTimeout());
 }
 
 test "categories render as the specified dotted names" {
