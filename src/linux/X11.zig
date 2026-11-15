@@ -440,9 +440,12 @@ fn handshake(self: *X11, cookie: ?[]const u8) Error!void {
     try self.flush();
 
     const r = &self.reader.interface;
-    const head = r.takeArray(8) catch return error.Disconnected;
+    // Copied out: reading the body may shift the reader's buffer under `head`.
+    const head = (r.takeArray(8) catch return error.Disconnected).*;
     const extra_len = @as(usize, std.mem.readInt(u16, head[6..8], .little)) * 4;
-    const body = r.take(extra_len) catch return error.Disconnected;
+    const body = try self.gpa.alloc(u8, extra_len);
+    defer self.gpa.free(body);
+    r.readSliceAll(body) catch return error.Disconnected;
     if (head[0] != 1) {
         const reason_len = @min(head[1], body.len);
         log.warn("perch: the X server refused the connection: {s}", .{body[0..reason_len]});
