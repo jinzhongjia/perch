@@ -278,7 +278,7 @@ pub fn main(init: std.process.Init) !u8 {
     const metrics = try mock.menuMetrics();
     var root_layout = try XMenu.layout(gpa, &menu, metrics);
     defer root_layout.deinit(gpa);
-    check(root_layout.rows.len == 6, "the hidden item takes no row, got {d} rows", .{root_layout.rows.len});
+    check(root_layout.rows.len == 5, "the hidden item takes no row, got {d} rows", .{root_layout.rows.len});
 
     const before = try mock.x.queryChildren(mock.x.setup.root);
     defer gpa.free(before);
