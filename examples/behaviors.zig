@@ -224,7 +224,7 @@ const App = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    if (@import("builtin").os.tag != .linux) {
+    if (!perch.backend.freedesktop) {
         std.debug.print("This host-behavior probe requires a Linux desktop session.\n", .{});
         return;
     }

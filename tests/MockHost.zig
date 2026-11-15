@@ -119,8 +119,8 @@ pub fn pump(self: *MockHost) !void {
 
 fn readable(self: *MockHost) !bool {
     if (self.conn.buffered() > 0) return true;
-    var fds = [_]std.os.linux.pollfd{
-        .{ .fd = self.conn.handle(), .events = std.os.linux.POLL.IN, .revents = 0 },
+    var fds = [_]std.posix.pollfd{
+        .{ .fd = self.conn.handle(), .events = std.posix.POLL.IN, .revents = 0 },
     };
     const n = try std.posix.poll(&fds, 0);
     return n > 0;

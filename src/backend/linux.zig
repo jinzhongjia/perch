@@ -5,16 +5,18 @@
 //! The item is published on our own bus name, then handed to
 //! `org.kde.StatusNotifierWatcher`. If no watcher is running yet we stay
 //! registered-pending and retry when one appears, so starting before the shell
-//! is not an error.
+//! is not an error. Meanwhile, an X session with an XEmbed system tray gets the
+//! icon there instead (see `linux/XEmbed.zig`), until a watcher shows up.
 
 const std = @import("std");
-const linux = std.os.linux;
 
 const Connection = @import("../linux/Connection.zig");
 const DBusMenu = @import("../linux/DBusMenu.zig");
 const IconExport = @import("../linux/IconExport.zig");
 const Message = @import("../linux/Message.zig");
+const sys = @import("../linux/sys.zig");
 const wire = @import("../linux/wire.zig");
+const XEmbed = @import("../linux/XEmbed.zig");
 
 const image = @import("../image.zig");
 const icon_mod = @import("../icon.zig");
@@ -55,8 +57,8 @@ pub const Backend = struct {
 
     /// Set by `stop`, read by `run`.
     stopping: std.atomic.Value(bool) = .init(false),
-    /// eventfd that `stop` writes to so a blocked `run` wakes immediately.
-    wakeup: linux.fd_t,
+    /// Self-pipe that `stop` writes to so a blocked `run` wakes immediately.
+    wakeup: sys.Wakeup,
 
     /// Bumped whenever the menu changes; hosts refetch when it moves.
     menu_revision: u32 = 1,
@@ -79,6 +81,12 @@ pub const Backend = struct {
 
     /// Scratch for marshalling reply bodies; reused.
     body: wire.Writer,
+
+    /// The XEmbed fallback, live only while no StatusNotifierWatcher is.
+    xembed: ?*XEmbed = null,
+    /// Icon theme base directories for the fallback, which has to find named
+    /// icons itself. Owned; filled on first use.
+    theme_dirs: std.ArrayList([]const u8) = .empty,
 
     /// One icon slot: every decoded size, largest first, plus the themed name of
     /// an exported SVG if the icon carried markup. Publishing all the sizes lets
@@ -135,7 +143,7 @@ pub const Backend = struct {
         const service_name = try std.fmt.allocPrint(
             gpa,
             "org.kde.StatusNotifierItem-{d}-{d}",
-            .{ linux.getpid(), nextItemNumber() },
+            .{ sys.getpid(), nextItemNumber() },
         );
         errdefer gpa.free(service_name);
 
@@ -148,18 +156,18 @@ pub const Backend = struct {
             return error.PlatformFailure;
         }
 
-        const wakeup_rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
-        if (linux.errno(wakeup_rc) != .SUCCESS) {
-            owner.last_diagnostic = "cannot create the wakeup eventfd";
+        const wakeup = sys.Wakeup.open() catch {
+            owner.last_diagnostic = "cannot create the wakeup pipe";
             return error.PlatformFailure;
-        }
+        };
+        errdefer wakeup.close();
 
         var self: Backend = .{
             .owner = owner,
             .gpa = gpa,
             .conn = conn,
             .service_name = service_name,
-            .wakeup = @intCast(wakeup_rc),
+            .wakeup = wakeup,
             .body = .init(gpa),
         };
         errdefer self.body.deinit();
@@ -187,7 +195,8 @@ pub const Backend = struct {
         if (self.findWatcher()) |name| {
             self.registerWithWatcher(name);
         } else {
-            log.info(
+            self.startXEmbed();
+            if (self.xembed == null or !self.xembed.?.docked()) log.info(
                 "perch: no status notifier host yet, waiting for one to appear " ++
                     "(GNOME needs the AppIndicator extension)",
                 .{},
@@ -204,6 +213,9 @@ pub const Backend = struct {
     }
 
     pub fn deinit(self: *Backend) void {
+        self.stopXEmbed();
+        for (self.theme_dirs.items) |dir| self.gpa.free(dir);
+        self.theme_dirs.deinit(self.gpa);
         self.icon.deinit(self.gpa);
         self.attention.deinit(self.gpa);
         self.overlay.deinit(self.gpa);
@@ -213,7 +225,7 @@ pub const Backend = struct {
         self.body.deinit();
         self.conn.destroy();
         self.gpa.free(self.service_name);
-        _ = linux.close(self.wakeup);
+        self.wakeup.close();
         self.* = undefined;
     }
 
@@ -222,6 +234,7 @@ pub const Backend = struct {
     pub fn setIcon(self: *Backend, icon: Icon) Error!void {
         _ = icon;
         try self.loadIcons();
+        self.syncXEmbed();
         self.emitItemSignal("NewIcon");
         return;
     }
@@ -229,6 +242,7 @@ pub const Backend = struct {
     pub fn setAttentionIcon(self: *Backend, icon: ?Icon) Error!void {
         _ = icon;
         try self.loadIcons();
+        self.syncXEmbed();
         self.emitItemSignal("NewAttentionIcon");
         return;
     }
@@ -236,11 +250,13 @@ pub const Backend = struct {
     pub fn setOverlayIcon(self: *Backend, icon: ?Icon) Error!void {
         _ = icon;
         try self.loadIcons();
+        self.syncXEmbed();
         self.emitItemSignal("NewOverlayIcon");
         return;
     }
 
     pub fn setStatus(self: *Backend, status: tray_mod.Status) Error!void {
+        if (self.xembed) |xembed| xembed.applyStatus();
         self.body.clearRetainingCapacity();
         self.body.string(status.sniName()) catch return error.OutOfMemory;
         self.conn.emit(.{
@@ -270,6 +286,8 @@ pub const Backend = struct {
         // Likewise: `owner.menu` is already updated, so a revision bump plus
         // LayoutUpdated is all the host needs.
         _ = menu;
+        // An open XEmbed popup points into the old menu.
+        if (self.xembed) |xembed| xembed.closeMenu();
         self.menu_revision += 1;
 
         self.body.clearRetainingCapacity();
@@ -363,15 +381,21 @@ pub const Backend = struct {
     pub fn closeNotification(self: *Backend, tag: Notification.Tag) Error!void {
         const posted = self.findPosted(tag) orelse return;
         const id = posted.id;
-        if (posted.awaiting) {
-            // The pending reply may name a notification we have not seen yet, or
-            // a fresh id if the daemon declined to replace; close that one on
-            // arrival. Dropping the record keeps the tag reusable straight away.
-            try self.orphans.append(self.gpa, posted.serial);
-            self.forgetPosted(tag);
+        if (!posted.awaiting) {
+            // The record stays until NotificationClosed reports reason 3, which
+            // is what reaches `on_notification_closed`.
+            return self.sendCloseNotification(id.?);
         }
-        // Otherwise the record stays until NotificationClosed reports reason 3.
+
+        // The pending reply may name a notification we have not seen yet, or a
+        // fresh id if the daemon declined to replace; close that one on arrival.
+        // Dropping the record keeps the tag reusable straight away.
+        try self.orphans.append(self.gpa, posted.serial);
+        self.forgetPosted(tag);
         if (id) |known| try self.sendCloseNotification(known);
+        // No NotificationClosed will name this tag now, so report it here, last:
+        // the callback may destroy the tray.
+        self.owner.dispatchNotificationClosed(tag, .closed);
     }
 
     fn sendCloseNotification(self: *Backend, id: u32) Error!void {
@@ -449,8 +473,12 @@ pub const Backend = struct {
         return null;
     }
 
-    /// Hosts own the menu popup, so all we can do is ask for it.
+    /// SNI hosts own the menu popup, so all we can do is ask for it; under
+    /// XEmbed, perch draws it.
     pub fn showMenu(self: *Backend) Error!void {
+        if (self.xembed) |xembed| {
+            if (xembed.docked()) return xembed.showMenu() catch error.PlatformFailure;
+        }
         self.body.clearRetainingCapacity();
         self.body.int(i32, DBusMenu.root_id) catch return error.OutOfMemory;
         self.body.int(u32, 0) catch return error.OutOfMemory; // timestamp
@@ -469,11 +497,9 @@ pub const Backend = struct {
         while (!self.stopping.load(.acquire)) {
             // Anything already buffered is a message we have not parsed yet, so
             // do not go to sleep on the socket first.
-            if (self.conn.buffered() == 0) {
-                const ready = self.wait(-1) catch return error.PlatformFailure;
-                if (!ready) continue;
-            }
-            try self.dispatchOne();
+            var now = self.buffered();
+            if (!now.any()) now = self.wait(-1) catch return error.PlatformFailure;
+            try self.dispatchReady(now);
         }
 
         if (self.owner.handler.on_quit) |cb| cb(self.owner.handler.ctx, self.owner);
@@ -481,38 +507,133 @@ pub const Backend = struct {
 
     pub fn pump(self: *Backend) Error!void {
         while (!self.stopping.load(.acquire)) {
-            if (self.conn.buffered() == 0) {
-                const ready = self.wait(0) catch return error.PlatformFailure;
-                if (!ready) return;
+            var now = self.buffered();
+            if (!now.any()) {
+                now = self.wait(0) catch return error.PlatformFailure;
+                if (!now.any()) return;
             }
-            try self.dispatchOne();
+            try self.dispatchReady(now);
         }
     }
 
     pub fn stop(self: *Backend) void {
         self.stopping.store(true, .release);
         // Nudge the poll in `run`; the value is irrelevant.
-        const one: u64 = 1;
-        _ = linux.write(self.wakeup, std.mem.asBytes(&one), @sizeOf(u64));
+        self.wakeup.signal();
     }
 
     // -- event loop ---------------------------------------------------------
 
-    /// Waits for the bus socket or the wakeup fd. Returns true when there is a
-    /// message to read.
-    fn wait(self: *Backend, timeout_ms: i32) !bool {
-        var fds = [_]linux.pollfd{
-            .{ .fd = self.conn.handle(), .events = linux.POLL.IN, .revents = 0 },
-            .{ .fd = self.wakeup, .events = linux.POLL.IN, .revents = 0 },
+    /// Which connections have something to read.
+    const Ready = struct {
+        bus: bool = false,
+        x: bool = false,
+
+        fn any(self: Ready) bool {
+            return self.bus or self.x;
+        }
+    };
+
+    /// Input already read from the sockets but not yet handled.
+    fn buffered(self: *Backend) Ready {
+        return .{
+            .bus = self.conn.buffered() > 0,
+            .x = if (self.xembed) |xembed| xembed.pending() else false,
+        };
+    }
+
+    /// Waits for the bus, the X server or the wakeup fd.
+    fn wait(self: *Backend, timeout_ms: i32) !Ready {
+        const readable = sys.POLL.IN | sys.POLL.HUP | sys.POLL.ERR;
+        var fds = [_]sys.pollfd{
+            .{ .fd = self.conn.handle(), .events = sys.POLL.IN, .revents = 0 },
+            .{ .fd = self.wakeup.read_end, .events = sys.POLL.IN, .revents = 0 },
+            // A negative fd is skipped by poll.
+            .{ .fd = if (self.xembed) |xembed| xembed.handle() else -1, .events = sys.POLL.IN, .revents = 0 },
         };
         const n = try std.posix.poll(&fds, timeout_ms);
-        if (n == 0) return false;
+        if (n == 0) return .{};
 
-        if (fds[1].revents & linux.POLL.IN != 0) {
-            var drain: u64 = undefined;
-            _ = linux.read(self.wakeup, std.mem.asBytes(&drain), @sizeOf(u64));
+        if (fds[1].revents & sys.POLL.IN != 0) self.wakeup.drain();
+        return .{
+            .bus = fds[0].revents & readable != 0,
+            .x = fds[2].fd >= 0 and fds[2].revents & readable != 0,
+        };
+    }
+
+    fn dispatchReady(self: *Backend, now: Ready) Error!void {
+        if (now.bus) try self.dispatchOne();
+        // A bus callback may have stopped the tray, or a watcher replaced XEmbed.
+        if (now.x and !self.stopping.load(.acquire)) {
+            const xembed = self.xembed orelse return;
+            xembed.dispatchOne() catch |err| {
+                // The tray keeps running on the bus; it just has no X icon now.
+                log.warn("perch: lost the X connection: {t}", .{err});
+                self.stopXEmbed();
+            };
         }
-        return fds[0].revents & (linux.POLL.IN | linux.POLL.HUP | linux.POLL.ERR) != 0;
+    }
+
+    // -- XEmbed fallback ------------------------------------------------------
+
+    /// Starts the X tray fallback, if this is an X session. Failing is normal
+    /// (Wayland, no DISPLAY), so it only logs.
+    fn startXEmbed(self: *Backend) void {
+        if (self.xembed != null) return;
+        const options = self.owner.options;
+        const environ = options.linux.environ;
+        const display = environ.getPosix("DISPLAY") orelse return;
+
+        var authority_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const authority = environ.getPosix("XAUTHORITY") orelse if (environ.getPosix("HOME")) |home|
+            std.fmt.bufPrint(&authority_buffer, "{s}/.Xauthority", .{home}) catch null
+        else
+            null;
+
+        if (self.theme_dirs.items.len == 0) self.collectThemeDirs() catch {};
+        self.xembed = XEmbed.create(self.gpa, options.io, self.owner, .{
+            .display = display,
+            .authority_path = authority,
+            .theme_dirs = self.theme_dirs.items,
+        }) catch |err| {
+            log.info("perch: no XEmbed tray fallback: {t}", .{err});
+            return;
+        };
+        self.syncXEmbed();
+        if (self.xembed.?.docked()) log.info("perch: no status notifier host; using the X system tray", .{});
+    }
+
+    fn stopXEmbed(self: *Backend) void {
+        const xembed = self.xembed orelse return;
+        xembed.destroy();
+        self.xembed = null;
+    }
+
+    fn syncXEmbed(self: *Backend) void {
+        const xembed = self.xembed orelse return;
+        const options = self.owner.options;
+        xembed.setSources(.{
+            .icon = .{ .images = self.icon.images, .name = themedName(options.icon) },
+            .attention = .{ .images = self.attention.images, .name = themedName(options.attention_icon) },
+            .overlay = .{ .images = self.overlay.images, .name = themedName(options.overlay_icon) },
+        });
+    }
+
+    /// `IconThemePath`, then the XDG data directories' `icons/`, in lookup order.
+    fn collectThemeDirs(self: *Backend) std.mem.Allocator.Error!void {
+        const options = self.owner.options;
+        const environ = options.linux.environ;
+        if (options.linux.icon_theme_path) |path| try self.theme_dirs.append(self.gpa, try self.gpa.dupe(u8, path));
+        if (environ.getPosix("XDG_DATA_HOME")) |home| {
+            try self.theme_dirs.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s}/icons", .{home}));
+        } else if (environ.getPosix("HOME")) |home| {
+            try self.theme_dirs.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s}/.local/share/icons", .{home}));
+        }
+        const data_dirs = environ.getPosix("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share";
+        var it = std.mem.tokenizeScalar(u8, data_dirs, ':');
+        while (it.next()) |dir| {
+            try self.theme_dirs.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s}/icons", .{dir}));
+        }
     }
 
     fn dispatchOne(self: *Backend) Error!void {
@@ -658,10 +779,14 @@ pub const Backend = struct {
 
         if (new_owner.len == 0) {
             self.registered = false;
+            // Fall back to an X tray until a watcher comes back.
+            self.startXEmbed();
             return;
         }
-        // A watcher appeared or took over — hand it our item.
+        // A watcher appeared or took over — hand it our item, and retire the
+        // X icon so the user does not see two.
         self.registerWithWatcher(name);
+        self.stopXEmbed();
     }
 
     // -- StatusNotifierItem -------------------------------------------------

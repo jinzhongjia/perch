@@ -5,6 +5,10 @@ const std = @import("std");
 const check_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
+    "x86_64-freebsd",
+    "aarch64-freebsd",
+    "x86_64-netbsd",
+    "x86_64-openbsd",
     "x86_64-windows-gnu",
     "aarch64-windows-gnu",
     "aarch64-macos",
@@ -100,7 +104,7 @@ pub fn build(b: *std.Build) void {
     // Integration tests drive the library through a mock StatusNotifierItem
     // host. They need a session bus of their own, since a real desktop already
     // owns the watcher name.
-    if (target.result.os.tag == .linux) {
+    if (isFreedesktop(target.result.os.tag)) {
         const integration = b.addExecutable(.{
             .name = "integration",
             .root_module = b.createModule(.{
@@ -115,6 +119,22 @@ pub fn build(b: *std.Build) void {
             "integration",
             "Run the mock-host tests (use: dbus-run-session -- zig build integration)",
         ).dependOn(&run_integration.step);
+
+        // The XEmbed fallback, against a mock X system tray on a throwaway
+        // server. It also needs a bus, one without a StatusNotifierWatcher.
+        const xembed = b.addExecutable(.{
+            .name = "xembed-integration",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/xembed.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "perch", .module = mod }},
+            }),
+        });
+        b.step(
+            "xembed-integration",
+            "Run the XEmbed tests (use: dbus-run-session -- xvfb-run -a zig build xembed-integration)",
+        ).dependOn(&b.addRunArtifact(xembed).step);
     }
 
     if (target.result.os.tag == .windows) {
@@ -134,6 +154,7 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile-check the library for every supported target");
     const check_windows = b.step("check-windows", "Compile and link both Windows targets");
     const check_linux = b.step("check-linux", "Compile and link both Linux targets");
+    const check_bsd = b.step("check-bsd", "Compile and link the FreeBSD, NetBSD and OpenBSD targets");
     for (check_targets) |triple| {
         const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
             std.debug.panic("bad check target '{s}': {s}", .{ triple, @errorName(err) });
@@ -157,13 +178,25 @@ pub fn build(b: *std.Build) void {
         switch (query.os_tag.?) {
             .windows => check_windows.dependOn(&install.step),
             .linux => check_linux.dependOn(&install.step),
+            .freebsd, .netbsd, .openbsd => check_bsd.dependOn(&install.step),
             else => {},
         }
     }
 }
 
+/// Mirrors `backend.freedesktop`: the targets the DBus backend serves.
+fn isFreedesktop(os: std.Target.Os.Tag) bool {
+    return switch (os) {
+        .linux, .freebsd, .netbsd, .openbsd => true,
+        else => false,
+    };
+}
+
 fn linkPlatform(mod: *std.Build.Module, macos_sdk: ?[]const u8) void {
-    if (mod.resolved_target.?.result.os.tag != .macos) return;
+    const os = mod.resolved_target.?.result.os.tag;
+    // Linux uses raw syscalls; the BSDs only promise a stable libc.
+    if (os == .freebsd or os == .netbsd or os == .openbsd) mod.link_libc = true;
+    if (os != .macos) return;
     mod.link_libc = true;
     mod.linkSystemLibrary("objc", .{});
     // Classes are looked up by name, so there may be no direct linker symbols.

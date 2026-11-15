@@ -1,7 +1,7 @@
 # Roadmap
 
 Ordered roughly by dependency. Each milestone should keep `zig build check`
-green on all six targets.
+green on all ten targets.
 
 ## 0.1 — a visible icon with a working menu
 
@@ -44,12 +44,14 @@ Linux covers most of this already; boxes stay open until all three agree.
 - [x] Notification actions, replacement, close, and the hint set (category,
       transient, resident, progress, sound, inline image) on Linux.
 - [x] Status, category, attention and overlay icon slots on Linux.
-- [ ] Hidden items; `visible` is currently always true.
+- [x] Hidden items (`MenuItem.visible`) on Linux, Windows and macOS.
 - [x] macOS template images following light/dark appearance.
 - [x] Text labels next to the icon on macOS; Linux SNI title.
-- [ ] XEmbed fallback for sessions with no StatusNotifierHost.
-- [ ] BSD support: the protocol is the same, but the backend reaches for eventfd,
-      /proc and `std.os.linux` directly.
+- [x] XEmbed fallback for sessions with no StatusNotifierHost: pure Zig X11,
+      self-drawn menu, re-docking on tray restart. Covered by a mock X tray on
+      Xvfb; real trays (stalonetray, trayer, i3bar) still need manual tests.
+- [x] BSD support: FreeBSD, NetBSD and OpenBSD share the Linux backend through
+      libc. Compile and link checked only; not yet run on a BSD.
 
 ## 0.3 — production concerns
 

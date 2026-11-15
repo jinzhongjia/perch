@@ -243,7 +243,9 @@ pub const Backend = struct {
         objc.send(void, menu, "setAutoenablesItems:", .{no});
         for (source.items.items) |entry| {
             if (entry.kind == .separator) {
-                objc.send(void, menu, "addItem:", .{objc.send(objc.Id, objc.class("NSMenuItem"), "separatorItem", .{})});
+                const separator = objc.send(objc.Id, objc.class("NSMenuItem"), "separatorItem", .{});
+                objc.send(void, separator, "setHidden:", .{@as(objc.BOOL, if (entry.visible) no else yes)});
+                objc.send(void, menu, "addItem:", .{separator});
                 continue;
             }
             const item = objc.send(objc.Id, objc.send(objc.Id, objc.class("NSMenuItem"), "alloc", .{}), "initWithTitle:action:keyEquivalent:", .{
@@ -254,6 +256,7 @@ pub const Backend = struct {
             objc.send(void, item, "setTarget:", .{self.target});
             objc.send(void, item, "setTag:", .{@as(isize, @intCast(entry.id))});
             objc.send(void, item, "setEnabled:", .{@as(objc.BOOL, if (entry.enabled) yes else no)});
+            objc.send(void, item, "setHidden:", .{@as(objc.BOOL, if (entry.visible) no else yes)});
             objc.send(void, item, "setState:", .{@as(isize, if ((entry.kind == .checkbox or entry.kind == .radio) and entry.checked) 1 else 0)});
             if (entry.kind == .radio) {
                 const dot = objc.send(objc.Id, objc.class("NSImage"), "imageNamed:", .{objc.string("NSMenuItemBullet")});
@@ -452,7 +455,7 @@ fn activate(receiver: objc.Id, _: objc.Sel, sender: objc.Id) callconv(.c) void {
     const id: MenuItem.Id = @intCast(tag);
     const menu = owner.menu orelse return;
     const entry = menu.find(id) orelse return;
-    if (!entry.enabled or entry.kind == .separator or entry.kind == .submenu) return;
+    if (!entry.enabled or !entry.visible or entry.kind == .separator or entry.kind == .submenu) return;
     owner.dispatchActivate(id);
     if (ownerFor(target)) |live| {
         if (live.menu) |source| syncChecks(live.impl.native_menu, source);

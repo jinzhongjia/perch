@@ -157,7 +157,11 @@ pub fn writeNodeProperty(w: *wire.Writer, node: Node, name: []const u8) Error!bo
     };
 
     if (item.kind == .separator) {
-        // A separator carries nothing but its type.
+        // A separator carries its type, and visibility only when hidden.
+        if (std.mem.eql(u8, name, "visible") and !item.visible) {
+            try w.variantBool(false);
+            return true;
+        }
         if (!std.mem.eql(u8, name, "type")) return false;
         try w.variantString("separator");
         return true;
@@ -173,7 +177,7 @@ pub fn writeNodeProperty(w: *wire.Writer, node: Node, name: []const u8) Error!bo
         return true;
     }
     if (std.mem.eql(u8, name, "visible")) {
-        try w.variantBool(true);
+        try w.variantBool(item.visible);
         return true;
     }
     if (std.mem.eql(u8, name, "toggle-type")) {
@@ -556,6 +560,26 @@ test "properties that do not apply are reported, not written" {
     _ = try r.variantBegin();
     try std.testing.expectEqualStrings("separator", try r.string());
     try std.testing.expect(r.atEnd());
+}
+
+test "hidden items and separators report visible false" {
+    const gpa = std.testing.allocator;
+
+    var menu = Menu.init(gpa);
+    defer menu.deinit();
+    const item = try menu.add(.{ .label = "Hidden", .visible = false });
+    const separator = try menu.add(.{ .kind = .separator, .visible = false });
+    const shown = try menu.addItem("Shown");
+
+    var w: wire.Writer = .init(gpa);
+    defer w.deinit();
+    for ([_]MenuItem.Id{ item, separator, shown }, [_]bool{ false, false, true }) |id, expected| {
+        w.clearRetainingCapacity();
+        try std.testing.expect(try writeNodeProperty(&w, findNode(&menu, @intCast(id)).?, "visible"));
+        var r: wire.Reader = .init(w.bytes(), .little);
+        try std.testing.expectEqualStrings("b", try r.variantBegin());
+        try std.testing.expectEqual(expected, try r.boolean());
+    }
 }
 
 test "Event.parse maps host event ids" {

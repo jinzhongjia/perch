@@ -436,11 +436,15 @@ pub const Backend = struct {
     fn buildMenu(self: *Backend, menu: *Menu) ?win32.HMENU {
         const handle = win32.CreatePopupMenu() orelse return null;
 
-        for (menu.items.items, 0..) |*item, index| {
-            self.appendItem(handle, item, @intCast(index)) catch {
+        // HMENU has no hidden state, so hidden items are simply left out.
+        var position: win32.UINT = 0;
+        for (menu.items.items) |*item| {
+            if (!item.visible) continue;
+            self.appendItem(handle, item, position) catch {
                 _ = win32.DestroyMenu(handle);
                 return null;
             };
+            position += 1;
         }
         return handle;
     }
@@ -629,6 +633,9 @@ test "native menus preserve labels, submenus and checkbox/radio/disabled state" 
     try menu.addSeparator();
     const sub = try menu.addSubmenu("Submenu");
     const child_id = try sub.add(.{ .label = "Quit", .accelerator = "Ctrl+Q" });
+    // Hidden items are left out of the native menu entirely.
+    _ = try menu.add(.{ .label = "Hidden", .visible = false });
+    _ = try sub.add(.{ .kind = .separator, .visible = false });
     var self: Backend = .{
         .owner = undefined,
         .gpa = gpa,
@@ -659,6 +666,7 @@ test "native menus preserve labels, submenus and checkbox/radio/disabled state" 
     try std.testing.expect(info.fType & win32.MFT_SEPARATOR != 0);
     try std.testing.expect(win32.GetMenuItemInfoW(handle, 4, win32.BOOL.TRUE, &info).toBool());
     const child = info.hSubMenu orelse return error.PlatformFailure;
+    try std.testing.expectEqual(@as(i32, 1), win32.GetMenuItemCount(child));
     info.dwTypeData = &label;
     info.cch = label.len;
     try std.testing.expect(win32.GetMenuItemInfoW(child, 0, win32.BOOL.TRUE, &info).toBool());

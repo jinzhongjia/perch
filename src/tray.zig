@@ -27,10 +27,6 @@ pub const Error = error{
     MissingBusAddress,
     /// The session bus refused the connection or the handshake.
     BusUnavailable,
-    /// The backend exists but this entry point is still a stub.
-    NotImplemented,
-    /// No status-notifier host is running (e.g. a bare X session).
-    NoTrayHost,
     /// The platform rejected the call; check `Tray.lastDiagnostic`.
     PlatformFailure,
     OutOfMemory,

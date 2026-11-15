@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     try out.print("  target   {t}-{t}\n", .{ builtin.cpu.arch, builtin.os.tag });
     try out.print("  backend  {s} (supported: {})\n", .{ perch.backend.name, perch.supported });
 
-    if (builtin.os.tag == .linux) {
+    if (perch.backend.freedesktop) {
         const env = init.environ_map;
         try out.print("  session  desktop={s} dbus={}\n", .{
             env.get("XDG_CURRENT_DESKTOP") orelse "<unset>",

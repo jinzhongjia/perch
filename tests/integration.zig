@@ -612,6 +612,11 @@ fn scenarioNotifications(fixture: Fixture) !void {
         if (!item.closed) open_early += 1;
     }
     check(open_early == 0, "closing before the reply leaves nothing open, got {d}", .{open_early});
+    var early_callbacks: usize = 0;
+    for (fixture.seen.closed.items) |closed| {
+        if (closed.tag == 11 and closed.reason == .closed) early_callbacks += 1;
+    }
+    check(early_callbacks == 1, "closing before the reply reports .closed once, got {d}", .{early_callbacks});
 
     std.debug.print("notification timeouts\n", .{});
     const timeouts = [_]struct { ms: ?u32, wire: i32 }{

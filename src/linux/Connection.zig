@@ -5,7 +5,7 @@
 //! what to do with each inbound message.
 
 const std = @import("std");
-const linux = std.os.linux;
+const sys = @import("sys.zig");
 const net = std.Io.net;
 
 const Message = @import("Message.zig");
@@ -109,7 +109,7 @@ pub fn destroy(self: *Connection) void {
 }
 
 /// The socket, for polling alongside other descriptors.
-pub fn handle(self: *const Connection) linux.fd_t {
+pub fn handle(self: *const Connection) sys.fd_t {
     return self.stream.socket.handle;
 }
 
@@ -147,7 +147,7 @@ fn authenticate(self: *Connection) Error!void {
     const w = &self.writer.interface;
 
     var uid_text: [16]u8 = undefined;
-    const uid = std.fmt.bufPrint(&uid_text, "{d}", .{linux.getuid()}) catch unreachable;
+    const uid = std.fmt.bufPrint(&uid_text, "{d}", .{sys.getuid()}) catch unreachable;
 
     // The leading nul byte is part of the transport, not the SASL exchange.
     w.writeAll("\x00AUTH EXTERNAL ") catch return error.WriteFailed;

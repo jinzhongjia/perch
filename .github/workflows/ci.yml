@@ -43,6 +43,18 @@ jobs:
       # A private bus: a real session would already own the watcher name.
       - run: dbus-run-session -- zig build integration
 
+  # The XEmbed fallback against a mock X system tray. The private bus has no
+  # StatusNotifierWatcher, so perch has to choose the X tray on its own.
+  xembed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - run: sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xauth xfonts-base
+      - run: dbus-run-session -- xvfb-run -a zig build xembed-integration
+
   check:
     # Linking AppKit/UserNotifications requires Apple's SDK. This host can also
     # cross-link Linux and Windows through Zig's bundled target support.
