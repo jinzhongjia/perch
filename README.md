@@ -8,7 +8,7 @@ no GTK, no Qt, no Electron.
 | Linux | `StatusNotifierItem` over DBus | **working**, verified on Plasma |
 | Windows | `Shell_NotifyIcon` + hidden top-level window | **working**, native smoke verified on Windows 11 x64 |
 | macOS | `NSStatusItem` via the Objective-C runtime | **working**, tray and notification interactions verified on M4 |
-| BSD | same protocol, but the code uses Linux syscalls | not yet |
+| FreeBSD, NetBSD, OpenBSD | the Linux backend, through libc | compiles and links; not run on BSD yet |
 
 > **Status: alpha on Linux, Windows and macOS.** Linux is verified
 > against Plasma. macOS has a pure Zig AppKit backend, with tray interactions,
@@ -105,14 +105,42 @@ Working today: every icon source below, tooltips, status and category, the full
 menu tree with submenus, checkboxes, radio groups, separators, accelerators and
 per-item icons, left/middle/right clicks with their position, scroll events,
 notifications with action buttons and replacement, and live updates through
-`NewIcon`/`NewStatus`/`LayoutUpdated`/`ItemsPropertiesUpdated`.
-
-Not yet: the XEmbed fallback for sessions with no StatusNotifierHost (so bare X
-sessions and trayer-style trays see nothing), and `MenuItem.visible`.
+`NewIcon`/`NewStatus`/`LayoutUpdated`/`ItemsPropertiesUpdated`. Hidden items
+(`MenuItem.visible = false`) keep their id and state but are not shown.
 
 perch registers with `org.kde.StatusNotifierWatcher` and falls back to the
 `org.freedesktop` and `org.x` names. GNOME has no built-in host: it needs the
 AppIndicator extension. `zig build run` reports which of these is the case.
+
+### XEmbed fallback
+
+With no watcher on the bus, an X session falls back to the XEmbed system tray
+that bare window managers, trayer, stalonetray and friends provide. perch speaks
+X11 directly over the display socket — no Xlib, no XCB — using `DISPLAY` and
+`XAUTHORITY` (or `~/.Xauthority`) from `Options.linux.environ`. When a watcher
+appears later, the X icon is withdrawn and the item registers over DBus
+instead; when the tray restarts, the icon docks again on its `MANAGER`
+announcement.
+
+perch paints the icon itself: decoded pixels, area-averaged to the size the
+tray gives it, composited over the tray's background (or left to the tray's
+compositor when it offers an ARGB visual). `Icon.named` is looked up as PNG in
+`IconThemePath` and the XDG icon directories; SVG is not rasterised, so an
+SVG-only icon shows a neutral placeholder. The tray protocol has no menu, so
+perch draws one with the X core font: submenus, checkboxes, radio groups,
+separators, disabled and hidden items, and accelerator text. Clicks carry
+modifiers and the pointer position; wheel buttons arrive as scroll events.
+
+Not shown under XEmbed: tooltips, the title, and notifications' tray context
+(notifications themselves still go over DBus). Escape closes the menu on evdev
+keymaps; there is no other keyboard navigation. A session bus is still
+required. Labels outside the BMP render as `?`.
+
+### BSD
+
+FreeBSD, NetBSD and OpenBSD build the same backend, linking libc for the few
+POSIX calls it makes. `zig build check-bsd` compiles and links all three; none
+has been run on real hardware yet, so treat BSD as untested.
 
 ## Windows
 
@@ -161,6 +189,7 @@ zig build windows-smoke  # requires a running Explorer desktop session
 zig build examples
 zig build check-windows # x64 and ARM64, compile and link only
 zig build check-linux   # x64 and ARM64, compile and link only
+zig build check-bsd     # FreeBSD x64/ARM64, NetBSD and OpenBSD, compile and link only
 ```
 
 `zig build check` also links both macOS targets and therefore requires an Apple
@@ -314,6 +343,10 @@ src/linux/Message.zig   DBus message header and body
 src/linux/Connection.zig session bus transport, SASL, message I/O
 src/linux/DBusMenu.zig  com.canonical.dbusmenu layout
 src/linux/IconExport.zig SVG to a private icon theme
+src/linux/sys.zig       the POSIX calls shared by Linux and the BSDs
+src/linux/X11.zig       X11 core-protocol client
+src/linux/XEmbed.zig    the XEmbed system tray fallback
+src/linux/XMenu.zig     the popup menu XEmbed draws
 src/windows/win32.zig   the Win32 declarations perch needs
 src/windows/icon.zig    ARGB32 pixels to HICON
 src/macos/objc.zig      typed Objective-C runtime ABI
@@ -365,9 +398,10 @@ zig build example-rich
 zig build example-behaviors  # Linux: interactive host-behavior probes
 zig build macos-app   # macOS: build zig-out/Perch.app for notification use
 dbus-run-session -- zig build integration   # mock-host tests
+dbus-run-session -- xvfb-run -a zig build xembed-integration   # mock X tray tests
 ```
 
-`zig build check` compiles and links all six targets. On macOS the build
+`zig build check` compiles and links all ten targets. On macOS the build
 discovers the selected SDK with `xcrun`; elsewhere supply an Apple SDK with
 `-Dmacos-sdk=/path/to/MacOSX.sdk`. CI runs the cross-link job on macOS so the
 framework declarations are checked against Apple's SDK, not just compiled.

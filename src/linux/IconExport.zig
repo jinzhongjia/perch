@@ -10,6 +10,7 @@
 //! The directory lives under `XDG_RUNTIME_DIR` and is removed on `deinit`.
 
 const std = @import("std");
+const sys = @import("sys.zig");
 const Dir = std.Io.Dir;
 
 const IconExport = @This();
@@ -51,7 +52,7 @@ pub fn init(
     const root = try std.fmt.allocPrint(
         gpa,
         "{s}/perch-{d}",
-        .{ base, std.os.linux.getpid() },
+        .{ base, sys.getpid() },
     );
     errdefer gpa.free(root);
 
@@ -75,8 +76,8 @@ fn removeStale(gpa: std.mem.Allocator, io: std.Io, base: []const u8) void {
         if (!std.mem.startsWith(u8, entry.name, "perch-")) continue;
 
         const pid = std.fmt.parseInt(i32, entry.name["perch-".len..], 10) catch continue;
-        if (pid == std.os.linux.getpid()) continue;
-        if (processExists(io, pid)) continue;
+        if (pid == sys.getpid()) continue;
+        if (sys.processAlive(pid)) continue;
 
         // The name has to be duplicated: deleting invalidates the iterator's
         // view of it.
@@ -84,15 +85,6 @@ fn removeStale(gpa: std.mem.Allocator, io: std.Io, base: []const u8) void {
         defer gpa.free(name);
         dir.deleteTree(io, name) catch {};
     }
-}
-
-fn processExists(io: std.Io, pid: i32) bool {
-    var buffer: [32]u8 = undefined;
-    const path = std.fmt.bufPrint(&buffer, "/proc/{d}", .{pid}) catch return true;
-    // On the fence, keep the directory: deleting a live process's icons is worse
-    // than leaving a stale one behind.
-    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
 }
 
 pub fn deinit(self: *IconExport) void {

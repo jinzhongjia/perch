@@ -1,4 +1,4 @@
-//! The Linux internals, exposed so tests — and callers that need to talk to the
+//! The Linux and BSD internals, exposed so tests — and callers that need to talk to the
 //! session bus themselves — do not have to reimplement a DBus client.
 //!
 //! Nothing here is required to use a tray. The stable surface is `perch.Tray`.
@@ -7,7 +7,11 @@ pub const Connection = @import("linux/Connection.zig");
 pub const DBusMenu = @import("linux/DBusMenu.zig");
 pub const IconExport = @import("linux/IconExport.zig");
 pub const Message = @import("linux/Message.zig");
+pub const sys = @import("linux/sys.zig");
 pub const wire = @import("linux/wire.zig");
+pub const X11 = @import("linux/X11.zig");
+pub const XEmbed = @import("linux/XEmbed.zig");
+pub const XMenu = @import("linux/XMenu.zig");
 
 /// Names and paths the StatusNotifierItem protocol uses.
 pub const sni = struct {

@@ -21,6 +21,8 @@ pub const MenuItem = struct {
     accelerator: ?[]const u8 = null,
     icon: ?Icon = null,
     enabled: bool = true,
+    /// Hidden items keep their id and state but are not shown.
+    visible: bool = true,
     /// Only read for `.checkbox` and `.radio`.
     checked: bool = false,
     /// Radio items sharing a group toggle as a set, across the whole tree.
@@ -151,6 +153,12 @@ pub const Menu = struct {
         return true;
     }
 
+    pub fn setVisible(self: *Menu, id: MenuItem.Id, visible: bool) bool {
+        const item = self.find(id) orelse return false;
+        item.visible = visible;
+        return true;
+    }
+
     pub fn setLabel(self: *Menu, id: MenuItem.Id, label: []const u8) bool {
         const item = self.find(id) orelse return false;
         item.label = label;
@@ -231,6 +239,18 @@ test "radio groups span the tree from any entry point" {
     try std.testing.expect(!menu.find(top).?.checked);
     try std.testing.expect(menu.setChecked(top, true));
     try std.testing.expect(!menu.find(nested).?.checked);
+}
+
+test "setVisible hides an item anywhere in the tree" {
+    var menu = Menu.init(std.testing.allocator);
+    defer menu.deinit();
+
+    const sub = try menu.addSubmenu("Sub");
+    const nested = try sub.addItem("Nested");
+    try std.testing.expect(menu.find(nested).?.visible);
+    try std.testing.expect(menu.setVisible(nested, false));
+    try std.testing.expect(!menu.find(nested).?.visible);
+    try std.testing.expect(!menu.setVisible(9999, false));
 }
 
 test "radio selection clears its group only" {
