@@ -185,7 +185,7 @@ zig build check-linux   # x64 and ARM64, compile and link only
 ```
 
 `zig build check` also links both macOS targets and therefore requires an Apple
-SDK (on another host, pass `-Dmacos-sdk=<path>`).
+SDK: pass `-Dmacos-sdk=<path>`, on macOS `-Dmacos-sdk="$(xcrun --show-sdk-path)"`.
 
 What the platform does not offer, and perch therefore does not pretend to:
 
@@ -393,9 +393,9 @@ dbus-run-session -- zig build integration   # mock-host tests
 dbus-run-session -- xvfb-run -a zig build xembed-integration   # mock X tray tests
 ```
 
-`zig build check` compiles and links all ten targets. On macOS the build
-discovers the selected SDK with `xcrun`; elsewhere supply an Apple SDK with
-`-Dmacos-sdk=/path/to/MacOSX.sdk`. CI runs the cross-link job on macOS so the
+`zig build check` compiles and links all six targets. The macOS targets need an
+Apple SDK passed as `-Dmacos-sdk=/path/to/MacOSX.sdk`; native macOS builds
+find it on their own. CI runs the cross-link job on macOS so the
 framework declarations are checked against Apple's SDK, not just compiled.
 
 `zig build integration` drives the library through a mock StatusNotifierItem host

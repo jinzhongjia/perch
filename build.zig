@@ -20,11 +20,7 @@ const examples = [_][]const u8{
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const macos_sdk = b.option([]const u8, "macos-sdk", "Path to an Apple macOS SDK when cross-compiling") orelse
-        if (b.graph.host.result.os.tag == .macos)
-            std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), " \r\n")
-        else
-            null;
+    const macos_sdk = b.option([]const u8, "macos-sdk", "Path to an Apple macOS SDK, needed to link explicit macOS targets");
 
     const mod = b.addModule("perch", .{
         .root_source_file = b.path("src/root.zig"),

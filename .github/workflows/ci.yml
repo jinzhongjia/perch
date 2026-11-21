@@ -65,5 +65,5 @@ jobs:
         with:
           version: 0.17.0
       # Compile every backend for every supported target from one host.
-      - run: zig build check
+      - run: zig build check -Dmacos-sdk="$(xcrun --sdk macosx --show-sdk-path)"
       - run: zig fmt --check .
