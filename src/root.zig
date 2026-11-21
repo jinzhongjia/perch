@@ -2,7 +2,7 @@
 //!
 //! One API, three native backends: Windows shell notification area,
 //! macOS `NSStatusItem`, and the freedesktop `StatusNotifierItem` /
-//! `XEmbed` fallback on Linux and the BSDs.
+//! `XEmbed` fallback on Linux.
 
 const std = @import("std");
 
@@ -38,8 +38,8 @@ pub const PixelFormat = image.PixelFormat;
 
 pub const backend = @import("backend.zig");
 
-/// Linux and BSD internals — a DBus client and the StatusNotifierItem names.
-/// Present only on those targets, and not needed to use a tray: it is here so
+/// Linux internals — a DBus client and the StatusNotifierItem names.
+/// Present only on Linux, and not needed to use a tray: it is here so
 /// tests and advanced callers can speak to the session bus without
 /// reimplementing one.
 pub const linux = if (backend.freedesktop) @import("linux.zig") else struct {};

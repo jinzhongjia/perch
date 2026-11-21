@@ -1,4 +1,4 @@
-//! Linux/BSD backend: the freedesktop `StatusNotifierItem` protocol over DBus,
+//! Linux backend: the freedesktop `StatusNotifierItem` protocol over DBus,
 //! with `com.canonical.dbusmenu` for the menu and `org.freedesktop.Notifications`
 //! for `notify`.
 //!

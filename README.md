@@ -8,7 +8,6 @@ no GTK, no Qt, no Electron.
 | Linux | `StatusNotifierItem` over DBus | **working**, verified on Plasma |
 | Windows | `Shell_NotifyIcon` + hidden top-level window | **working**, native smoke verified on Windows 11 x64 |
 | macOS | `NSStatusItem` via the Objective-C runtime | **working**, tray and notification interactions verified on M4 |
-| FreeBSD, NetBSD, OpenBSD | the Linux backend, through libc | compiles and links; not run on BSD yet |
 
 > **Status: alpha on Linux, Windows and macOS.** Linux is verified
 > against Plasma. macOS has a pure Zig AppKit backend, with tray interactions,
@@ -136,12 +135,6 @@ Not shown under XEmbed: tooltips, the title, and notifications' tray context
 keymaps; there is no other keyboard navigation. A session bus is still
 required. Labels outside the BMP render as `?`.
 
-### BSD
-
-FreeBSD, NetBSD and OpenBSD build the same backend, linking libc for the few
-POSIX calls it makes. `zig build check-bsd` compiles and links all three; none
-has been run on real hardware yet, so treat BSD as untested.
-
 ## Windows
 
 A hidden top-level window owns one `NOTIFYICONDATAW` entry and receives the shell's
@@ -189,7 +182,6 @@ zig build windows-smoke  # requires a running Explorer desktop session
 zig build examples
 zig build check-windows # x64 and ARM64, compile and link only
 zig build check-linux   # x64 and ARM64, compile and link only
-zig build check-bsd     # FreeBSD x64/ARM64, NetBSD and OpenBSD, compile and link only
 ```
 
 `zig build check` also links both macOS targets and therefore requires an Apple
@@ -343,7 +335,7 @@ src/linux/Message.zig   DBus message header and body
 src/linux/Connection.zig session bus transport, SASL, message I/O
 src/linux/DBusMenu.zig  com.canonical.dbusmenu layout
 src/linux/IconExport.zig SVG to a private icon theme
-src/linux/sys.zig       the POSIX calls shared by Linux and the BSDs
+src/linux/sys.zig       the few POSIX calls the backend makes
 src/linux/X11.zig       X11 core-protocol client
 src/linux/XEmbed.zig    the XEmbed system tray fallback
 src/linux/XMenu.zig     the popup menu XEmbed draws

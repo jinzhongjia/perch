@@ -1,9 +1,8 @@
 const builtin = @import("builtin");
 
-/// Linux and the BSDs run the same desktops and the same StatusNotifierItem
-/// hosts, so they share the freedesktop backend.
+/// The targets served by the freedesktop backend.
 pub const freedesktop = switch (builtin.os.tag) {
-    .linux, .freebsd, .netbsd, .openbsd => true,
+    .linux => true,
     else => false,
 };
 

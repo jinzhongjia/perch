@@ -5,10 +5,6 @@ const std = @import("std");
 const check_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
-    "x86_64-freebsd",
-    "aarch64-freebsd",
-    "x86_64-netbsd",
-    "x86_64-openbsd",
     "x86_64-windows-gnu",
     "aarch64-windows-gnu",
     "aarch64-macos",
@@ -154,7 +150,6 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile-check the library for every supported target");
     const check_windows = b.step("check-windows", "Compile and link both Windows targets");
     const check_linux = b.step("check-linux", "Compile and link both Linux targets");
-    const check_bsd = b.step("check-bsd", "Compile and link the FreeBSD, NetBSD and OpenBSD targets");
     for (check_targets) |triple| {
         const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
             std.debug.panic("bad check target '{s}': {s}", .{ triple, @errorName(err) });
@@ -178,7 +173,6 @@ pub fn build(b: *std.Build) void {
         switch (query.os_tag.?) {
             .windows => check_windows.dependOn(&install.step),
             .linux => check_linux.dependOn(&install.step),
-            .freebsd, .netbsd, .openbsd => check_bsd.dependOn(&install.step),
             else => {},
         }
     }
@@ -187,15 +181,13 @@ pub fn build(b: *std.Build) void {
 /// Mirrors `backend.freedesktop`: the targets the DBus backend serves.
 fn isFreedesktop(os: std.Target.Os.Tag) bool {
     return switch (os) {
-        .linux, .freebsd, .netbsd, .openbsd => true,
+        .linux => true,
         else => false,
     };
 }
 
 fn linkPlatform(mod: *std.Build.Module, macos_sdk: ?[]const u8) void {
     const os = mod.resolved_target.?.result.os.tag;
-    // Linux uses raw syscalls; the BSDs only promise a stable libc.
-    if (os == .freebsd or os == .netbsd or os == .openbsd) mod.link_libc = true;
     if (os != .macos) return;
     mod.link_libc = true;
     mod.linkSystemLibrary("objc", .{});

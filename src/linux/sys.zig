@@ -1,5 +1,4 @@
-//! The few POSIX calls the freedesktop backend makes. Linux reaches them as raw
-//! syscalls; the BSDs, which run the same desktops and hosts, through libc.
+//! The few POSIX calls the freedesktop backend makes.
 
 const std = @import("std");
 const posix = std.posix;

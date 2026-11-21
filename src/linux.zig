@@ -1,4 +1,4 @@
-//! The Linux and BSD internals, exposed so tests — and callers that need to talk to the
+//! The Linux internals, exposed so tests — and callers that need to talk to the
 //! session bus themselves — do not have to reimplement a DBus client.
 //!
 //! Nothing here is required to use a tray. The stable surface is `perch.Tray`.

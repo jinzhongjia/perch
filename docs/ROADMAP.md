@@ -50,8 +50,6 @@ Linux covers most of this already; boxes stay open until all three agree.
 - [x] XEmbed fallback for sessions with no StatusNotifierHost: pure Zig X11,
       self-drawn menu, re-docking on tray restart. Covered by a mock X tray on
       Xvfb; real trays (stalonetray, trayer, i3bar) still need manual tests.
-- [x] BSD support: FreeBSD, NetBSD and OpenBSD share the Linux backend through
-      libc. Compile and link checked only; not yet run on a BSD.
 
 ## 0.3 — production concerns
 

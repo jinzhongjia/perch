@@ -6,7 +6,7 @@ const Menu = @import("menu.zig").Menu;
 const MenuItem = @import("menu.zig").MenuItem;
 const Notification = @import("notification.zig").Notification;
 
-/// Linux and BSD knobs, ignored elsewhere.
+/// Linux knobs, ignored elsewhere.
 pub const LinuxOptions = struct {
     /// The process environment, needed to find `DBUS_SESSION_BUS_ADDRESS`. Zig
     /// 0.17 gives library code no other way to read the environment, so pass
